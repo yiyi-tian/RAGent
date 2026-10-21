@@ -2,7 +2,7 @@
 
 RAGent 是一个面向 Linux 系统编程课程的多用户智能 Agent。系统通过 C++ 命令行客户端接收用户请求，由 C++ Agent 服务器完成网络通信、并发调度和业务路由，并根据请求类型执行普通对话、本地知识库检索问答或受控的 Linux 命令。
 
-> 当前状态：项目处于设计冻结和第一阶段开发准备期，功能尚未实现。仓库将按照“先最小网络闭环，再逐步接入线程池、RAG和大模型”的顺序开发。
+> 当前状态：已实现第一阶段网络闭环：C++17客户端和单线程非阻塞`epoll`服务器支持多个客户端、长度前缀JSON消息和固定响应。CHAT、RAG和CMD当前均只返回固定模板，尚未接入线程池、检索、大模型或真实命令执行。
 
 ## 项目目标
 
@@ -90,11 +90,11 @@ flowchart LR
 正式客户端程序名为`agent`，服务端程序名为`agent-server`。
 
 ```bash
-./agent-server --config config/agent.json
-./agent --host 127.0.0.1 --port 9000
+./build/agent-server --config config/agent.json
+./build/agent --host 127.0.0.1 --port 9000
 ```
 
-以上命令是计划中的最终接口，当前阶段尚未提供可执行程序。
+以上为当前可用接口，构建步骤见下方“构建、运行与验证”。后面的Logo是最终界面设计；当前使用简洁的`RAGent CLI`欢迎信息和`agent>`提示符，历史记录和Tab补全留待后续加入。
 
 客户端启动后进入主界面：
 
@@ -140,8 +140,8 @@ agent> /exit
 | `/cmd [操作]` | 进入CMD模式，或执行一次CMD请求 |
 | `/back` | 返回`agent>`主界面 |
 | `/help` | 显示帮助 |
-| `/status` | 查看服务状态 |
-| `/list` | 在CMD模式查看允许的操作 |
+| `/status` | 当前通过PING检查Agent网络连接，不检查依赖服务 |
+| `/list` | 当前在CMD模式提示尚未接入真实命令操作列表 |
 | `/exit` | 断开连接并退出客户端 |
 
 客户端模式只是输入快捷方式。每条网络请求都会在消息头中携带独立的`message_type`，服务端不保存客户端当前模式。
@@ -149,7 +149,7 @@ agent> /exit
 客户端还将提供单次请求方式，用于脚本和并发测试：
 
 ```bash
-./agent \
+./build/agent \
   --host 127.0.0.1 \
   --port 9000 \
   --mode rag \
@@ -158,7 +158,7 @@ agent> /exit
 
 ## 并发模型
 
-RAGent采用：
+目标并发模型采用（线程池、任务队列、完成队列与eventfd将在阶段2实现）：
 
 ```text
 单epoll网络线程 + 全局固定工作线程池
@@ -197,7 +197,7 @@ struct MessageHeader {
 
 上述结构体仅展示逻辑字段，不代表线上内存布局。协议使用大端序，消息体最多1 MiB，必须逐字段序列化。请求通过`request_id`匹配，响应允许乱序返回。
 
-详细约定见以下文档；当前为待全组确认的设计提案，尚未实现：
+协议约定已确认；TCP基础能力已在第一阶段实现，后续服务和线程池按开发阶段接入：
 
 - [TCP协议规范](docs/protocol.md)：消息头、JSON消息体、错误码、连接行为和验收场景。
 - [模块接口草案](docs/module-interfaces.md)：内部所有权、队列、RAG、LLM和命令执行器接口。
@@ -217,11 +217,37 @@ struct MessageHeader {
 | 7 | 完成故障、并发和过载测试 |
 | 8 | 完成部署脚本、文档和课程演示 |
 
-当前第一个里程碑：
+第一阶段里程碑：
 
 > 在Ubuntu中编译并启动C++ `epoll`服务器，多个客户端能够发送带`request_id`的消息并收到固定响应。
 
-在完成这个闭环以前，不接入Qdrant、Embedding和真实大模型。
+本阶段不接入Qdrant、Embedding和真实大模型。
+
+## 构建、运行与验证
+
+当前已在Ubuntu 24.04、GCC 13.3、CMake 3.28和Boost 1.83环境验证。构建依赖：C++17编译器、CMake 3.16以上、Boost.JSON 1.75以上（Ubuntu开发包`libboost-json-dev`）；自动化测试另需Python 3。没有网络下载或模型依赖。
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j 2
+ctest --test-dir build --output-on-failure
+```
+
+不运行测试的构建可在配置时加入`-DBUILD_TESTING=OFF`。启动服务器后，在其他终端启动交互客户端或单次请求：
+
+```bash
+./build/agent-server --config config/agent.json
+./build/agent --host 127.0.0.1 --port 9000
+./build/agent --host 127.0.0.1 --port 9000 --mode rag --query "什么是epoll？"
+```
+
+单次请求输出`server received: 什么是epoll？`，随后退出；三类请求当前均为此固定响应逻辑。可以同时运行多个客户端，每次连接中的请求ID从1递增。
+
+服务器支持`--host`、`--port`、`--config`、`--max-connections`和`--max-pending-bytes`，命令行值覆盖配置文件。默认监听`127.0.0.1:9000`，最多128个连接，每连接待发送数据最多2 MiB；接收缓冲按1 MiB消息体上限加固定头和单次读取余量限制。端口0由系统分配并在启动时输出，主要供自动化测试使用。达到连接或发送上限时关闭对应连接并记录原因。SIGINT（Ctrl+C）或SIGTERM可停止服务器并释放所有连接。
+
+客户端当前接受IPv4地址，支持`--timeout-ms`（默认10000，覆盖连接等待或一次请求的收发总等待）。超时关闭连接，不自动重试；`--mode`与`--query`必须配对。单次请求退出码：0成功，1连接/协议/超时等失败，2参数错误，3服务器返回ERROR。交互模式中的`/back`只返回主界面，`/exit`、输入EOF或Ctrl+C退出整个客户端。
+
+自动化测试通过Python标准库直接构造网络字节，覆盖消息边界与错误处理、10客户端同时连接并连续请求、交互与单次请求、慢客户端缓冲上限、客户端超时和服务器停止。详细测试范围见[第一阶段验证说明](docs/testing.md)。
 
 ## 计划目录
 
