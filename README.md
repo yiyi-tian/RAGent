@@ -1,327 +1,93 @@
 # RAGent
 
-RAGent 是一个面向 Linux 系统编程课程的多用户智能 Agent。系统通过 C++ 命令行客户端接收用户请求，由 C++ Agent 服务器完成网络通信、并发调度和业务路由，并根据请求类型执行普通对话、本地知识库检索问答或受控的 Linux 命令。
+RAGent 是一个面向 Linux 系统编程课程的多客户端 Agent。在线客户端和 Agent 服务使用 C17；客户端通过自定义 TCP 协议发送请求，Agent 通过 HTTP/JSON 调用大模型及后端服务。Linux 手册知识库的离线解析与入库工具计划使用 Python。
 
-> 当前状态：已实现第一阶段网络闭环：C++17客户端和单线程非阻塞`epoll`服务器支持多个客户端、长度前缀JSON消息和固定响应。CHAT、RAG和CMD当前均只返回固定模板，尚未接入线程池、检索、大模型或真实命令执行。
+> 当前状态：阶段一网络闭环已移植为 C17。非阻塞 epoll Agent 支持 CHAT、RAG、CMD 和默认的 AGENT 请求，并返回固定响应；尚未接入线程池、模型、知识库或命令执行沙箱。
 
-## 项目目标
+## 目标架构
 
-RAGent 计划支持三类请求：
+系统保留四种入口：默认的 AGENT 模式可组合工具；CHAT 仅调用模型；RAG 必须检索 Linux 知识库后再调用模型；CMD 使用受限操作工具并由模型解释结果。用户不需要自行判断复杂请求应使用哪种模式。
 
-| 类型 | 功能 | 处理路径 |
-|---|---|---|
-| `CHAT` | 普通大模型对话 | Agent → llama-server |
-| `RAG` | 根据本地资料回答 | Agent → RAG检索 → llama-server |
-| `CMD` | 执行允许的Linux操作 | Agent → 安全检查 → Linux子进程 |
-
-课程开发重点包括：
-
-- TCP Socket与非阻塞I/O；
-- 单`epoll`网络线程；
-- 固定工作线程池和有界任务队列；
-- 自定义应用层协议；
-- 多客户端并发与过载控制；
-- Embedding、Qdrant和RAG流程；
-- HTTP/JSON服务调用；
-- `fork/exec/pipe`、超时与子进程回收；
-- 命令白名单和安全边界。
-
-本项目不训练大模型，也不从零实现向量数据库或模型推理框架。
-
-## 总体架构
+Agent 为每个请求保留原始问题和对话上下文。模型通过 OpenAI 兼容的 Chat Completions HTTP 接口收到问题及当前模式允许的工具定义。Agent 校验工具名和参数，执行可并行的独立调用，将结果写回上下文后继续请求模型。达到调用上限、超时或工具失败时，结果说明已完成和失败的步骤。最终响应沿用原始 request_id，包含回答、检索来源和操作摘要。
 
 ```mermaid
 flowchart LR
-    C[命令行客户端]
-
-    subgraph VM[Linux 虚拟机]
-        N[epoll网络线程]
-        D{请求类型}
-
-        CP[构造普通对话Prompt]
-        RS[RAG检索服务]
-        E[Embedding模型]
-        Q[(Qdrant)]
-        RP[构造RAG Prompt]
-
-        X[安全命令执行器]
-        OS[Linux子进程]
-
-        CQ[完成队列]
-    end
-
-    subgraph WIN[Windows宿主机]
-        L[llama-server]
-        G[Qwen量化模型]
-    end
-
-    C -->|TCP自定义协议| N
-    N -->|完整请求| D
-
-    D -->|CHAT| CP
-    CP -->|HTTP/JSON<br/>普通Prompt| L
-
-    D -->|RAG| RS
-    RS -->|文本向量化| E
-    RS -->|向量检索| Q
-    RS -->|Top-K文本块| RP
-    RP -->|HTTP/JSON<br/>资料加问题| L
-
-    D -->|CMD| X
-    X -->|fork/exec/pipe| OS
-    OS -->|命令输出| X
-
-    L --> G
-    L -->|模型回答| CQ
-    X -->|命令结果| CQ
-
-    CQ -->|eventfd通知| N
-    N -->|TCP自定义协议| C
+    C[C17 命令行客户端] -->|自定义 TCP 帧| A[C17 Agent / epoll]
+    A --> W[有界工作队列与 Agent 上下文]
+    W -->|HTTP / JSON| L[OpenAI 兼容模型服务<br/>DeepSeek 起步，可配置扩展]
+    W -->|HTTP / JSON| R[检索适配器]
+    R --> E[Embedding 服务]
+    R --> Q[(Qdrant)]
+    W --> T[受限工具执行器]
+    T --> S[后续阶段实现的沙箱]
+    P[Python 离线入库工具] --> Q
 ```
 
-推荐部署方式：
+客户端与 Agent 继续使用已确认的 20 字节定长头和 UTF-8 JSON 消息体。Agent 与大模型、Embedding 服务及 Qdrant 使用 HTTP/JSON；当前无 Web 前端或双向流式输出需求，不引入 WebSocket。
 
-- Ubuntu虚拟机：C++客户端、Agent服务器、RAG服务、Embedding、Qdrant和命令执行器；
-- Windows宿主机：使用RTX 4050运行`llama-server`和Qwen量化模型；
-- Agent通过HTTP/JSON调用RAG服务和模型服务。
+知识库首期以中文 Linux 命令手册和基础知识资料为主，覆盖常见命令、文件与权限、进程、网络、服务及系统调用。只导入 Linux 资料，不把项目文档作为知识库原始语料。离线入库先使用普通 Python 脚本，不引入 LangChain。
 
-## 命令行交互
+## 当前客户端
 
-正式客户端程序名为`agent`，服务端程序名为`agent-server`。
-
-```bash
-./build/agent-server --config config/agent.json
-./build/agent --host 127.0.0.1 --port 9000
-```
-
-以上为当前可用接口，构建步骤见下方“构建、运行与验证”。后面的Logo是最终界面设计；当前使用简洁的`RAGent CLI`欢迎信息和`agent>`提示符，历史记录和Tab补全留待后续加入。
-
-客户端启动后进入主界面：
-
-```text
-  _____            _____             _
- |  __ \     /\   / ____|           | |
- | |__) |   /  \ | |  __  ___ _ __  | |_
- |  _  /   / /\ \| | |_ |/ _ \ '_ \ | __|
- | | \ \  / ____ \ |__| |  __/ | | || |_
- |_|  \_\/_/    \_\_____|\___|_| |_| \__|
-
-RAG Agent CLI
-Connected to 127.0.0.1:9000
-
-输入 / 查看可用命令，输入 /help 查看帮助。
-agent>
-```
-
-第一版采用显式模式，不调用大模型判断请求类型：
-
-```text
-agent> /chat
-chat> 什么是TCP？
-chat> /back
-
-agent> /rag
-rag> 本项目为什么使用epoll？
-rag> /back
-
-agent> /cmd
-cmd> 查看磁盘空间
-cmd> /back
-
-agent> /exit
-```
-
-主要命令：
-
-| 命令 | 作用 |
-|---|---|
-| `/chat [问题]` | 进入CHAT模式，或执行一次CHAT请求 |
-| `/rag [问题]` | 进入RAG模式，或执行一次RAG请求 |
-| `/cmd [操作]` | 进入CMD模式，或执行一次CMD请求 |
-| `/back` | 返回`agent>`主界面 |
-| `/help` | 显示帮助 |
-| `/status` | 当前通过PING检查Agent网络连接，不检查依赖服务 |
-| `/list` | 当前在CMD模式提示尚未接入真实命令操作列表 |
-| `/exit` | 断开连接并退出客户端 |
-
-客户端模式只是输入快捷方式。每条网络请求都会在消息头中携带独立的`message_type`，服务端不保存客户端当前模式。
-
-客户端还将提供单次请求方式，用于脚本和并发测试：
-
-```bash
-./build/agent \
-  --host 127.0.0.1 \
-  --port 9000 \
-  --mode rag \
-  --query "什么是epoll？"
-```
-
-## 并发模型
-
-目标并发模型采用（线程池、任务队列、完成队列与eventfd将在阶段2实现）：
-
-```text
-单epoll网络线程 + 全局固定工作线程池
-```
-
-- 网络线程只负责连接、非阻塞收发、协议解码和连接状态；
-- 工作线程负责RAG检索、模型调用和命令执行等耗时任务；
-- 请求通过有界任务队列进入线程池；
-- 完成结果通过完成队列返回，并由`eventfd`唤醒网络线程；
-- 工作线程不直接向客户端Socket发送数据；
-- 队列满时返回`SERVER_BUSY`，不允许请求无限堆积。
-
-## 消息协议
-
-协议设计采用“固定20字节二进制消息头＋UTF-8 JSON消息体”的长度前缀协议：
-
-```cpp
-enum class MessageType : uint16_t {
-    CHAT_REQUEST = 1,
-    RAG_REQUEST  = 2,
-    CMD_REQUEST  = 3,
-    RESPONSE     = 100,
-    ERROR        = 101,
-    PING         = 200,
-    PONG         = 201
-};
-
-struct MessageHeader {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t message_type;
-    uint32_t body_length;
-    uint64_t request_id;
-};
-```
-
-上述结构体仅展示逻辑字段，不代表线上内存布局。协议使用大端序，消息体最多1 MiB，必须逐字段序列化。请求通过`request_id`匹配，响应允许乱序返回。
-
-协议约定已确认；TCP基础能力已在第一阶段实现，后续服务和线程池按开发阶段接入：
-
-- [TCP协议规范](docs/protocol.md)：消息头、JSON消息体、错误码、连接行为和验收场景。
-- [模块接口草案](docs/module-interfaces.md)：内部所有权、队列、RAG、LLM和命令执行器接口。
-- [开发计划](docs/development-plan.md)：开发阶段、分工原则和阶段验收标准。
-
-## 开发阶段
-
-| 阶段 | 目标 |
-|---|---|
-| 0 | 冻结需求、协议、模块接口和分工 |
-| 1 | 客户端与`epoll`服务器完成固定响应闭环 |
-| 2 | 加入固定线程池、任务队列和10客户端测试 |
-| 3 | 使用Mock服务跑通CHAT、RAG和CMD三条路径 |
-| 4 | 接入Embedding、Qdrant和真实RAG检索 |
-| 5 | 接入`llama-server`和真实模型回答 |
-| 6 | 实现安全命令执行器 |
-| 7 | 完成故障、并发和过载测试 |
-| 8 | 完成部署脚本、文档和课程演示 |
-
-第一阶段里程碑：
-
-> 在Ubuntu中编译并启动C++ `epoll`服务器，多个客户端能够发送带`request_id`的消息并收到固定响应。
-
-本阶段不接入Qdrant、Embedding和真实大模型。
-
-## 构建、运行与验证
-
-当前已在Ubuntu 24.04、GCC 13.3、CMake 3.28和Boost 1.83环境验证。构建依赖：C++17编译器、CMake 3.16以上、Boost.JSON 1.75以上（Ubuntu开发包`libboost-json-dev`）；自动化测试另需Python 3。没有网络下载或模型依赖。
+构建并启动：
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build -j 2
 ctest --test-dir build --output-on-failure
-```
-
-不运行测试的构建可在配置时加入`-DBUILD_TESTING=OFF`。启动服务器后，在其他终端启动交互客户端或单次请求：
-
-```bash
 ./build/agent-server --config config/agent.json
 ./build/agent --host 127.0.0.1 --port 9000
-./build/agent --host 127.0.0.1 --port 9000 --mode rag --query "什么是epoll？"
 ```
 
-单次请求输出`server received: 什么是epoll？`，随后退出；三类请求当前均为此固定响应逻辑。可以同时运行多个客户端，每次连接中的请求ID从1递增。
+客户端默认进入 Agent 模式，普通输入直接发送为 AGENT_REQUEST。可以使用 /chat、/rag、/cmd 切换单一模式，/back 返回 Agent 模式。阶段一这些模式都返回固定模板，不调用后端服务。
 
-服务器支持`--host`、`--port`、`--config`、`--max-connections`和`--max-pending-bytes`，命令行值覆盖配置文件。默认监听`127.0.0.1:9000`，最多128个连接，每连接待发送数据最多2 MiB；接收缓冲按1 MiB消息体上限加固定头和单次读取余量限制。端口0由系统分配并在启动时输出，主要供自动化测试使用。达到连接或发送上限时关闭对应连接并记录原因。SIGINT（Ctrl+C）或SIGTERM可停止服务器并释放所有连接。
+单次请求示例：
 
-客户端当前接受IPv4地址，支持`--timeout-ms`（默认10000，覆盖连接等待或一次请求的收发总等待）。超时关闭连接，不自动重试；`--mode`与`--query`必须配对。单次请求退出码：0成功，1连接/协议/超时等失败，2参数错误，3服务器返回ERROR。交互模式中的`/back`只返回主界面，`/exit`、输入EOF或Ctrl+C退出整个客户端。
-
-自动化测试通过Python标准库直接构造网络字节，覆盖消息边界与错误处理、10客户端同时连接并连续请求、交互与单次请求、慢客户端缓冲上限、客户端超时和服务器停止。详细测试范围见[第一阶段验证说明](docs/testing.md)。
-
-## 计划目录
-
-目录将随开发阶段逐步创建，不预先生成大量空文件：
-
-```text
-RAGent/
-├── CMakeLists.txt
-├── README.md
-├── config/
-├── docs/
-├── include/
-│   ├── protocol/
-│   ├── net/
-│   ├── core/
-│   ├── rag/
-│   ├── llm/
-│   └── command/
-├── src/
-│   ├── client/
-│   ├── server/
-│   ├── protocol/
-│   ├── net/
-│   ├── core/
-│   ├── rag/
-│   ├── llm/
-│   └── command/
-├── services/
-├── scripts/
-├── tests/
-└── data/documents/
+```bash
+./build/agent --host 127.0.0.1 --port 9000 --mode agent --query "解释 epoll 并查看当前内存情况"
 ```
 
-## 开发环境
+也支持 --mode chat|rag|cmd。服务器默认监听 127.0.0.1:9000，当前最多接入128个连接，每连接待发送缓冲上限为2 MiB；这些是阶段一网络设置，不代表未来端到端并发目标。
 
-计划使用：
+Ubuntu 24.04 构建依赖：C17 编译器、CMake 3.16以上、pkg-config、json-c 开发包和 Python 3（仅运行集成测试）。例如：
 
-- Ubuntu Linux；
-- C++17；
-- GCC/G++；
-- CMake；
-- GNU Readline；
-- Python 3与FastAPI；
-- Qdrant；
-- llama.cpp / `llama-server`；
-- Qwen量化模型。
-
-具体安装、构建和运行命令将在对应阶段实际验证后补充，README不记录未经验证的命令。
-
-## 协作约定
-
-- `main`只保存通过阶段验收的稳定版本；
-- 功能在`feature/*`分支开发；
-- 公共协议和头文件修改前由全组确认；
-- 合并前至少由另一名成员阅读；
-- 每个阶段必须提供可运行演示和失败路径测试；
-- 不提交模型文件、构建目录、虚拟环境、密钥和运行日志。
-
-建议里程碑标签：
-
-```text
-v0.1-network
-v0.2-thread-pool
-v0.3-mock-agent
-v0.4-rag
-v0.5-llm
-v0.6-command
-v1.0-final
+```bash
+sudo apt install build-essential cmake pkg-config libjson-c-dev python3
 ```
 
-## 安全说明
+项目没有模型或外部服务依赖时也可构建和运行阶段一网络闭环。当前真实模型首选 DeepSeek，使用可配置的 OpenAI 兼容 Chat Completions HTTP 接口；凭据只从运行时配置或环境读取，不提交到仓库。
 
-CMD路径不会直接执行用户原始字符串，也不会使用`system(user_input)`或`/bin/sh -c`。命令必须经过操作映射、程序白名单、参数校验、超时控制和输出大小限制；未识别的操作直接拒绝。
+## 后续开发路线
 
-## License
+| 阶段 | 目标 |
+|---|---|
+| 1 | C17 客户端、epoll Agent、TCP 协议及 Agent 固定响应闭环（当前） |
+| 2 | 固定工作线程池、有界任务与完成队列、过载处理 |
+| 3 | Mock 工具调用闭环、请求上下文、工具校验、调用上限及部分失败响应 |
+| 4 | 中文 Linux 手册/基础资料的 Python 离线导入、Embedding 与 Qdrant 检索 |
+| 5 | OpenAI 兼容 Chat Completions 接口及 DeepSeek 配置，后续可替换模型 |
+| 6 | 只读操作和受控写操作；工作区写入在隔离容器中运行 |
+| 7 | 集成、故障和并发压测；目标为1000个端到端请求，模型依硬件能力限流排队 |
+| 8 | 部署、演示和文档交付 |
+
+性能目标暂不规定固定时延。压测应报告机器与模型配置、吞吐、排队时间、端到端延迟分位数和失败率，再按实际单机体验确定门槛。1000并发是后续全链路目标，不是当前阶段一承诺。
+
+## 命令工具安全路线
+
+只读操作可在白名单内自动执行。其他白名单操作也可自动执行，但写操作只作用于专用沙箱工作区；宿主机系统级变更逐次确认，并只能通过固定、参数校验过的操作。任意 Shell 字符串不作为工具参数，也不使用 system() 或 /bin/sh -c。
+
+后续沙箱按阶段实现：非特权身份、专用工作区挂载、只读根文件系统、资源和输出限制，再加入 seccomp 与 cgroups。工作区写操作可使用 rootless 容器；不得把 Docker 管理套接字暴露给 Agent。当前阶段没有命令执行或沙箱代码。
+
+## 文档
+
+- [TCP协议规范](docs/protocol.md)：客户端与 Agent 的帧格式、请求类型和响应约定。
+- [模块接口草案](docs/module-interfaces.md)：C 模块职责、所有权和后端 HTTP 边界。
+- [开发计划](docs/development-plan.md)：阶段目标、验收条件和安全路线。
+- [第一阶段验证说明](docs/testing.md)：当前自动化测试覆盖范围。
+- [开发约定](AGENTS.md)：代码风格、中文注释和交付规则。
+
+## 协作
+
+功能在 feature/* 分支开发；公共协议和接口变更按小组协作约定确认；阶段交付应包含可运行演示和失败路径测试。不要提交构建目录、模型文件、密钥或运行日志。
 
 本项目当前未指定开源许可证。未经项目成员确认，请勿默认将代码作为开源项目分发。

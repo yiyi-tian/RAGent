@@ -1,4 +1,4 @@
-"""第一阶段黑盒验收：独立构造线上帧，不复用C++编码实现。"""
+"""第一阶段黑盒验收：独立构造线上帧，不复用客户端或服务器编解码实现。"""
 
 import concurrent.futures
 import errno
@@ -112,9 +112,9 @@ class NetworkTests(unittest.TestCase):
             connection.sendall(frame(request_id=request_id))
             self.assertEqual(receive(connection), (100, request_id, {"text": "server received: hello", "sources": []}))
 
-    def test_three_types_unicode_and_unknown_fields(self):
+    def test_modes_unicode_and_unknown_fields(self):
         with self.server.connect() as connection:
-            for kind in (1, 2, 3):
+            for kind in (1, 2, 3, 4):
                 connection.sendall(frame(kind, kind, dump({"query": "  你好，epoll！\n", "extra": [1, 2]})))
                 self.assertEqual(receive(connection), (100, kind, {"text": "server received:   你好，epoll！\n", "sources": []}))
 
@@ -232,7 +232,7 @@ class NetworkTests(unittest.TestCase):
             self.assertEqual(receive(connection)[2]["text"], "server received: " + query)
 
     def test_client_single_request_modes(self):
-        for mode in ("chat", "rag", "cmd"):
+        for mode in ("agent", "chat", "rag", "cmd"):
             result = self.client("--mode", mode, "--query", "你好")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "server received: 你好")
@@ -244,12 +244,17 @@ class NetworkTests(unittest.TestCase):
         script = "普通输入\n/help\n/chat\nfirst\n/rag one-shot\nsecond\n/back\n/cmd\n/list\nthird\n/back\n/status\n/exit\n"
         result = self.client(input=script)
         self.assertEqual(result.returncode, 0, result.stderr)
-        for query in ("first", "one-shot", "second", "third"):
+        for query in ("普通输入", "first", "one-shot", "second", "third"):
             self.assertIn("server received: " + query, result.stdout)
-        self.assertIn("请先选择", result.stdout)
+        self.assertIn("默认使用 Agent 模式", result.stdout)
+        self.assertIn("agent>", result.stdout)
         self.assertIn("chat>", result.stdout)
         self.assertIn("未检查依赖服务", result.stdout)
-        self.assertNotIn("server received: 普通输入", result.stdout)
+
+    def test_agent_is_default_repl_mode(self):
+        result = self.client(input="问题直接发给Agent\n/exit\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("server received: 问题直接发给Agent", result.stdout)
 
     def test_client_usage_errors(self):
         for args in (("--mode", "rag"), ("--query", "q"), ("--port", "-1"),
@@ -344,18 +349,18 @@ class NetworkTests(unittest.TestCase):
 
 
 class ClientPeerTests(unittest.TestCase):
-    def run_peer(self, response, timeout_ms=500):
+    def run_peer(self, response, timeout_ms=500, mode="chat", expected_type=1):
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
             listener.listen(1)
             process = subprocess.Popen(
                 [CLIENT, "--port", str(listener.getsockname()[1]), "--timeout-ms", str(timeout_ms),
-                 "--mode", "chat", "--query", "hello"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                 "--mode", mode, "--query", "hello"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
             listener.settimeout(5)
             with listener.accept()[0] as connection:
                 connection.settimeout(5)
-                self.assertEqual(receive(connection)[0:2], (1, 1))
+                self.assertEqual(receive(connection)[0:2], (expected_type, 1))
                 if response is not None:
                     # 按字节发送，验证客户端也处理半包。
                     for byte in response:
@@ -369,6 +374,38 @@ class ClientPeerTests(unittest.TestCase):
     def test_fragmented_response(self):
         result = self.run_peer(frame(100, 1, dump({"text": "answer", "sources": []})))
         self.assertEqual(result[:2], (0, "answer\n"))
+
+    def test_agent_client_uses_agent_request_type(self):
+        result = self.run_peer(frame(100, 1, dump({"text": "answer", "sources": []})),
+                               mode="agent", expected_type=4)
+        self.assertEqual(result[:2], (0, "answer\n"))
+
+    def test_default_repl_sends_agent_request_type(self):
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            process = subprocess.Popen(
+                [CLIENT, "--port", str(listener.getsockname()[1])],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            try:
+                listener.settimeout(5)
+                with listener.accept()[0] as connection:
+                    process.stdin.write("直接提问\n")
+                    process.stdin.flush()
+                    kind, request_id, body = receive(connection)
+                    self.assertEqual((kind, request_id, body),
+                                     (4, 1, {"query": "直接提问"}))
+                    connection.sendall(frame(100, 1, dump({"text": "answer", "sources": []})))
+                    process.stdin.write("/exit\n")
+                    process.stdin.flush()
+                stdout, stderr = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, stderr)
+                self.assertIn("answer", stdout)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
 
     def test_remote_error_exit_code(self):
         result = self.run_peer(frame(101, 1, dump({"code": "INVALID_REQUEST", "message": "失败"})))

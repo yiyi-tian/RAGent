@@ -1,12 +1,14 @@
 # RAGent TCP协议规范 v1
 
-状态：协议约定已由项目方确认，v1作为第一阶段实现依据。基础TCP编解码、固定响应和PING/PONG已实现；后续业务错误码与服务能力按开发阶段接入。不兼容修改需要重新确认。
+状态：TCP传输与帧格式保持v1；本次同步升级客户端和Agent，新增AGENT_REQUEST（类型4），不要求兼容仓库外旧客户端。阶段一C实现对四种业务请求均返回固定响应。后续响应字段和服务能力按开发阶段接入。
 
 ## 1. 范围与原则
 
 客户端和Agent使用TCP长连接，采用固定二进制消息头和UTF-8 JSON消息体。TCP是字节流，一次读取不等于一条消息；接收端必须处理半包、粘包，发送端必须处理部分写入。
 
-消息头确定边界、类型和请求标识，JSON表达业务数据。客户端模式只影响当前输入对应的请求类型，服务器不保存客户端的CHAT/RAG/CMD模式。
+本文仅规定客户端与Agent之间的TCP应用协议。Agent与大模型、Embedding及Qdrant之间使用各自的HTTP/JSON服务接口，不复用此TCP帧。
+
+消息头确定边界、类型和请求标识，JSON表达业务数据。客户端默认将普通输入作为AGENT_REQUEST发送；CHAT、RAG、CMD是显式单一模式。模式只影响当前请求类型和可用工具，不保存为连接状态。
 
 第一版不包含身份认证、TLS、流式输出、取消请求、断线续传和自动重试，部署于受控课程实验网络。
 
@@ -24,7 +26,7 @@
 | 8 | body_length | 32位 | JSON编码后的字节数 |
 | 12 | request_id | 64位 | 请求标识，响应原样返回 |
 
-所有整数使用大端序（网络字节序），包括64位request_id。按偏移逐字段编码和解码，不直接收发C++结构体内存，也不以sizeof结构体计算线上头长度。
+所有整数使用大端序（网络字节序），包括64位request_id。按偏移逐字段编码和解码，不直接收发C结构体内存，也不以sizeof结构体计算线上头长度。
 
 消息体最多1 MiB，即1,048,576字节；限制对两个方向均有效。收到完整头后先校验magic、version和长度，再等待或分配消息体。长度为0时消息边界有效，但消息体不是合法JSON对象，按INVALID_REQUEST处理。
 
@@ -45,6 +47,7 @@ CHAT_REQUEST、request_id=1、消息体为无换行的`{"query":"hello"}`，消�
 | CHAT_REQUEST | 1 | 客户端→Agent | 普通对话 |
 | RAG_REQUEST | 2 | 客户端→Agent | 本地知识库问答 |
 | CMD_REQUEST | 3 | 客户端→Agent | 受控操作 |
+| AGENT_REQUEST | 4 | 客户端→Agent | 默认Agent模式，可组合本次允许的工具 |
 | RESPONSE | 100 | Agent→客户端 | 业务成功 |
 | ERROR | 101 | Agent→客户端 | 请求失败 |
 | PING | 200 | 客户端→Agent | 网络存活检查 |
@@ -54,7 +57,7 @@ CHAT_REQUEST、request_id=1、消息体为无换行的`{"query":"hello"}`，消�
 
 ### 业务请求
 
-CHAT_REQUEST、RAG_REQUEST、CMD_REQUEST共用：
+CHAT_REQUEST、RAG_REQUEST、CMD_REQUEST、AGENT_REQUEST共用：
 
 ```json
 {
@@ -93,7 +96,9 @@ CHAT、CMD及第一阶段固定响应的sources为空。RAG来源项约定如下
 
 source、chunk_id、text均为字符串，score为有限JSON数值，表示检索相关性，不解释为概率。source使用可展示的文档标识，不暴露服务器私有绝对路径。
 
-第一阶段三类请求均返回固定模板，不调用真实服务或执行命令。例如query为hello时：
+Agent接入工具后，成功响应还需携带已执行操作摘要；其字段形状在Agent阶段冻结。阶段一没有工具执行，因此当前响应保持text和空sources，不返回操作项。模型或工具调用细节不通过客户端TCP帧传输。
+
+第一阶段四类请求均返回固定模板，不调用真实服务或执行命令。例如query为hello时：
 
 ```json
 {
@@ -175,7 +180,7 @@ request_id从1开始，在同一连接中随请求（包括PING）递增且不�
 - 按任意位置拆分头与体，并把多帧合并发送，确认连续解析且ID正确。
 - 验证1 MiB长度边界、超限头、错误magic/version、未知类型、非法方向和重复ID。
 - 模拟部分写入与中途断开，确认数据不丢、服务器继续运行。
-- 验证三种模式和单次请求共用编解码，固定响应与PING/PONG符合约定。
+- 验证CHAT/RAG/CMD/AGENT四种请求和单次请求共用编解码，Agent为客户端默认模式；固定响应与PING/PONG符合约定。
 
 第二阶段：
 
