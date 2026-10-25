@@ -1,6 +1,7 @@
 #include "protocol/protocol.h"
-
+#include "protocol/tool_validate.h"
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -235,6 +236,41 @@ int handle_fixed_request(const Frame *request, Frame *response)
         return frame_make_error(request->request_id, "INVALID_REQUEST",
                                 "query必须是非空白字符串", response);
     }
+    // ---- 开始插入的工具调用模拟逻辑 ----
+    // 如果请求类型是 CMD_REQUEST，我们模拟大模型发起了 execute_command 工具调用
+        if (request->type == MESSAGE_CMD_REQUEST) {
+        json_object *args = json_object_new_object();
+        json_object_object_add(args, "cmd", json_object_new_string(query_text));
+        
+        json_object *args_array = json_object_new_array();
+        json_object_array_add(args_array, json_object_new_string("-l"));
+        json_object_object_add(args, "args", args_array);
+
+        ToolCall tc;
+        int status = validate_tool_call(TOOL_EXECUTE_COMMAND, args, &tc);
+        
+        json_object *mock_result = json_object_new_object();
+        
+        char mock_text[512] = {0};
+        if (status == 0) {
+            snprintf(mock_text, sizeof(mock_text), "mock_success: %s %s", tc.cmd, tc.args_json);
+            json_object_object_add(mock_result, "tool_name", json_object_new_string(TOOL_EXECUTE_COMMAND));
+            json_object_object_add(mock_result, "status", json_object_new_string("mock_success"));
+        } else {
+            snprintf(mock_text, sizeof(mock_text), "error: %s", tc.error_msg);
+            json_object_object_add(mock_result, "status", json_object_new_string("error"));
+        }
+
+        json_object_object_add(mock_result, "text", json_object_new_string(mock_text));
+        json_object_object_add(mock_result, "sources", json_object_new_array());
+
+        const char *encoded = json_object_to_json_string_ext(mock_result, JSON_C_TO_STRING_PLAIN);
+        int final_status = frame_set_body(response, MESSAGE_RESPONSE, request->request_id, encoded, strlen(encoded));
+        json_object_put(mock_result);
+        json_object_put(args);
+        json_object_put(body);
+        return final_status;
+      }
 
     json_object *result = json_object_new_object();
     json_object *text = json_object_new_string_len("server received: ", 17);
