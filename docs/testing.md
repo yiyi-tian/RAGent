@@ -44,3 +44,20 @@ python3 tests/integration/network_test.py ./build/agent-server ./build/agent
 构建后执行 `python3 tests/benchmark/network_benchmark.py build/agent-server --clients 16 --requests 100`。脚本输出请求数、错误数、吞吐、延迟分位数和服务器CPU使用率；需要Linux `/proc`。比较版本时使用相同构建类型、参数和空闲环境，并记录机器配置。该结果只反映固定响应，不代表模型或RAG性能。
 
 一次探索性对比（Linux 6.8.0-136-generic、x86_64、可见4个CPU、Debug构建，16客户端各100次请求）中，阶段一基线为273.7次/秒、p95 133.60 ms、服务器CPU 16.2%；当前版本为355.6次/秒、p95 104.59 ms、服务器CPU 36.2%，均无请求错误。测试期间还有其他构建任务，且只有单次样本，不能据此判断性能提升；应在空闲环境重复测量。
+
+## ThreadSanitizer 并发检查
+
+ThreadSanitizer 在运行时检查已执行代码路径中的数据竞争；它不能证明所有线程调度都没有问题。以下命令使用独立构建目录，收集所有子进程的检测报告，并检查测试结果：
+
+~~~bash
+cmake -S . -B /tmp/ragent-tsan -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_C_FLAGS='-fsanitize=thread -fno-omit-frame-pointer' \
+  -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread'
+cmake --build /tmp/ragent-tsan -j2
+report_dir=$(mktemp -d /tmp/ragent-tsan-report-XXXXXX)
+TSAN_OPTIONS="halt_on_error=1:log_path=$report_dir/report" \
+  setarch "$(uname -m)" -R ctest --test-dir /tmp/ragent-tsan --output-on-failure
+find "$report_dir" -type f -print
+~~~
+
+本机的地址随机化配置会使ThreadSanitizer启动时报 `unexpected memory mapping`；`setarch -R` 仅关闭测试进程及其子进程的地址随机化，不修改系统设置。若环境不允许使用该选项，需要在允许的测试环境中运行。测试通过且报告目录为空才表示这些测试路径未发现数据竞争。

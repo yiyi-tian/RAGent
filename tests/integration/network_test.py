@@ -79,7 +79,11 @@ class RunningServer:
                 self.process.wait()
                 raise AssertionError("服务器未正常停止")
         self.process.stdout.close()
+        self.log.seek(0)
+        log_output = self.log.read(8192)
         self.log.close()
+        if self.process.returncode != 0:
+            raise AssertionError(f"服务器退出码为 {self.process.returncode}，日志: {log_output}")
 
 
 class NetworkTests(unittest.TestCase):
