@@ -2,9 +2,9 @@
 
 ## 项目目标
 
-RAGent 是运行在 Linux 上的多客户端 Agent。在线客户端、Agent 网络服务和业务编排使用 C17。客户端通过自定义 TCP 应用协议接入；Agent 使用 HTTP/JSON 调用 OpenAI 兼容的大模型接口、Embedding 服务和 Qdrant。Linux 手册的批量解析与向量入库使用 Python 脚本，不把 Python 引入在线请求处理路径。
+RAGent 是运行在 Linux 上的多客户端 Agent。客户端、网络服务和受控执行边界使用 C17，在线 Agent 使用 Python 和 LangChain 编排模型与工具。客户端通过自定义 TCP 接入 C 服务；C 服务计划通过内部 HTTP/JSON 调用 Python Agent，Agent 通过 HTTP/JSON 调用兼容模型和后端服务。Linux 手册的批量解析与向量入库使用 Python。
 
-实验指导书提供参考，不构成固定实现限制。自研在线模块使用 C17；外部模型和向量库作为服务使用。阶段一网络闭环现以 C 实现，并包含 AGENT_REQUEST 占位入口。
+实验指导书提供参考，不构成固定实现限制。网络与安全敏感执行边界使用 C17；模型和向量库作为外部服务使用。当前已实现 C 网络闭环及并发骨架，业务仍返回固定响应。
 
 项目重点包括 Linux Socket 与 epoll、固定工作线程池、有界队列、C 服务的 HTTP/JSON 通信、Agent 工具循环、RAG 检索、命令安全边界、进程管理和并发测试。不训练大模型、不实现向量数据库、不开放任意 Shell。
 
@@ -37,9 +37,9 @@ RAGent 是运行在 Linux 上的多客户端 Agent。在线客户端、Agent 网
 
 客户端到 Agent 使用已确认的自定义 TCP 协议：固定20字节大端消息头、UTF-8 JSON消息体、request_id关联、半包/粘包处理和有界收发缓冲。新增 AGENT_REQUEST 类型；具体字段以 docs/protocol.md 为准。
 
-Agent到大模型、Embedding服务和Qdrant使用HTTP/JSON。模型接口采用 OpenAI 兼容 Chat Completions 及结构化 tool_calls；HTTP超时、非成功状态、非法JSON、上游限流和输出过大都必须形成明确失败状态。客户端不使用HTTP或WebSocket。当前没有浏览器交互和双向流式输出需求，因此不引入WebSocket。
+C网络服务到Python Agent，以及Agent到大模型、Embedding服务和Qdrant使用HTTP/JSON。模型接口采用 OpenAI 兼容 Chat Completions 及结构化 tool_calls；HTTP超时、非成功状态、非法JSON、上游限流和输出过大都必须形成明确失败状态。客户端不使用HTTP或WebSocket。当前没有浏览器交互和双向流式输出需求，因此不引入WebSocket。
 
-网络线程只处理连接、帧解码/编码和非阻塞收发；业务、HTTP、检索和命令执行在线程池处理。工作线程不直接写客户端Socket。连接、任务和完成结果由稳定的 connection_id 与 request_id 关联，不能仅依赖可复用fd。
+网络线程只处理连接、帧解码/编码和非阻塞收发；C工作线程处理业务并在后续通过HTTP调用Python Agent；Agent负责编排检索和模型，受控命令由独立C执行器校验执行。工作线程不直接写客户端Socket。连接、任务和完成结果由稳定的 connection_id 与 request_id 关联，不能仅依赖可复用fd。
 
 ## Linux 知识库
 
@@ -52,7 +52,7 @@ Agent到大模型、Embedding服务和Qdrant使用HTTP/JSON。模型接口采用
 
 原始语料来自 Linux 手册和有明确来源/许可的中文 Linux 基础资料，不使用本项目文档作为知识库原始数据。若重要手册仅有英文版本，可保留原文并通过人工审核的中文资料补充，不把模型临时生成文本冒充权威手册。
 
-离线导入使用普通 Python 工具完成抽取、清洗、分块、元数据记录、Embedding调用和Qdrant写入；暂不使用 LangChain。每个块保留可展示来源、版本或发行版信息及稳定chunk标识。在线查询由C Agent经服务接口检索，答案附来源；检索为空或证据不足时明确说明。
+离线导入使用普通 Python 工具完成抽取、清洗、分块、元数据记录、Embedding调用和Qdrant写入；暂不使用 LangChain。每个块保留可展示来源、版本或发行版信息及稳定chunk标识。在线查询由Python Agent经服务接口检索，答案附来源；检索为空或证据不足时明确说明。
 
 ## 命令操作和沙箱
 
@@ -77,9 +77,9 @@ Agent到大模型、Embedding服务和Qdrant使用HTTP/JSON。模型接口采用
 |---|---|---|
 | 1：C网络闭环 | C17客户端、单epoll Agent、TCP编解码、CHAT/RAG/CMD固定响应、新增AGENT_REQUEST并设为默认入口 | Ubuntu构建；协议边界、request_id、半包/粘包、多客户端和停止流程测试 |
 | 2：并发骨架 | 固定线程池、有界任务/完成队列、eventfd通知和过载处理 | 慢任务、队列满、断连、fd复用、有序停止、连接容量测试 |
-| 3：Mock Agent | 每请求上下文、工具定义和调用校验、工具结果回填、受限并行、最大轮数和部分失败 | 用Mock模型验证最终回答、多个工具轮次、非法工具/参数、超时及部分失败 |
+| 3：Mock Agent | Python LangChain Agent每请求上下文、工具定义和调用校验、工具结果回填、受限并行、最大轮数和部分失败 | 用Mock模型验证最终回答、多个工具轮次、非法工具/参数、超时及部分失败 |
 | 4：Linux RAG | Python离线导入、Embedding、Qdrant查询和来源回传 | 中文语料导入、重复导入控制、正确来源、空结果、依赖故障 |
-| 5：真实模型 | OpenAI兼容HTTP Chat Completions、DeepSeek配置、tool_calls映射 | 模型成功、工具调用往返、认证失败、限流、超时、非法响应及秘密不入日志 |
+| 5：真实模型 | LangChain模型适配、OpenAI兼容HTTP Chat Completions、DeepSeek配置、tool_calls映射 | 模型成功、工具调用往返、认证失败、限流、超时、非法响应及秘密不入日志 |
 | 6：受控命令与沙箱 | 只读白名单、工作区写操作容器、后续经确认的固定系统操作 | 参数拒绝、路径逃逸防护、隔离/资源限制、超时输出限制、子进程回收和操作审计 |
 | 7：集成与压测 | 完整多客户端Agent闭环、故障恢复和性能记录 | 逐步压测到1000端到端在途请求，报告实际延迟和错误率；不要求1000路模型并行生成 |
 | 8：交付 | 配置、部署步骤、演示和实验文档 | 从干净环境按文档构建运行；明确依赖、限制和安全边界 |
@@ -88,7 +88,7 @@ Agent到大模型、Embedding服务和Qdrant使用HTTP/JSON。模型接口采用
 
 ## 部署与依赖边界
 
-在线自研组件为C17程序；json-c用于JSON编解码，libcurl或经评估的C HTTP客户端用于后续服务调用。HTTP服务地址、模型名、超时和并发通过配置提供，密钥由环境或受保护配置读取，不提交仓库。
+在线网络和受控执行组件使用C17，Agent使用Python与LangChain；json-c用于C端JSON编解码，libcurl或经评估的C HTTP客户端用于后续内部服务调用。HTTP服务地址、模型名、超时和并发通过配置提供，密钥由环境或受保护配置读取，不提交仓库。
 
 外部组件可包括DeepSeek兼容模型服务、Embedding服务和Qdrant。知识库导入脚本使用Python及必要文档处理库。部署位置不预设Windows/Ubuntu组合；按当前单机条件先验证本机到DeepSeek的HTTP链路，后续配置可切换到本地或其他兼容服务。
 

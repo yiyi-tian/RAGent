@@ -4,7 +4,7 @@
 
 ## 项目背景与依据
 
-RAGent 在线客户端、Agent、协议和业务模块使用 C17；Linux手册离线入库工具使用Python。系统支持默认AGENT模式和CHAT、RAG、CMD三种受限模式。
+RAGent 客户端、网络服务和受控执行边界使用 C17；Agent 编排和 Linux 手册离线入库使用 Python，在线 Agent 使用 LangChain。系统支持默认AGENT模式和CHAT、RAG、CMD三种受限模式。
 
 开始相关工作前，阅读对应的项目文档：
 
