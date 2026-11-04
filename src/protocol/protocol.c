@@ -146,7 +146,8 @@ json_object *json_parse_object(const unsigned char *body, size_t body_length)
     const enum json_tokener_error error = json_tokener_get_error(tokener);
     const size_t parsed_length = json_tokener_get_parse_end(tokener);
     json_tokener_free(tokener);
-    if (error != json_tokener_success || value == NULL || !json_object_is_type(value, json_type_object)) {
+    if (error != json_tokener_success || value == NULL ||
+        !json_object_is_type(value, json_type_object)) {
         if (value != NULL) {
             json_object_put(value);
         }
@@ -172,8 +173,8 @@ bool text_is_blank(const char *text, size_t length)
     return true;
 }
 
-static int frame_set_body(Frame *frame, MessageType type, uint64_t request_id,
-                          const char *body, size_t body_length)
+static int frame_set_body(Frame *frame, MessageType type, uint64_t request_id, const char *body,
+                          size_t body_length)
 {
     frame->body = malloc(body_length == 0 ? 1 : body_length);
     if (frame->body == NULL) {
@@ -207,14 +208,14 @@ int handle_fixed_request(const Frame *request, Frame *response)
     if (request->type != MESSAGE_CHAT_REQUEST && request->type != MESSAGE_RAG_REQUEST &&
         request->type != MESSAGE_CMD_REQUEST && request->type != MESSAGE_AGENT_REQUEST &&
         request->type != MESSAGE_PING) {
-        return frame_make_error(request->request_id, "UNSUPPORTED_MESSAGE_TYPE",
-                                "消息类型未知或方向不合法", response);
+        return frame_make_error(
+            request->request_id, "UNSUPPORTED_MESSAGE_TYPE", "消息类型未知或方向不合法", response);
     }
 
     json_object *body = json_parse_object(request->body, request->body_length);
     if (body == NULL) {
-        return frame_make_error(request->request_id, "INVALID_REQUEST",
-                                "消息体必须是合法UTF-8 JSON对象", response);
+        return frame_make_error(
+            request->request_id, "INVALID_REQUEST", "消息体必须是合法UTF-8 JSON对象", response);
     }
     if (request->type == MESSAGE_PING) {
         json_object_put(body);
@@ -225,22 +226,26 @@ int handle_fixed_request(const Frame *request, Frame *response)
     if (!json_object_object_get_ex(body, "query", &query) ||
         !json_object_is_type(query, json_type_string)) {
         json_object_put(body);
-        return frame_make_error(request->request_id, "INVALID_REQUEST",
-                                "query必须是非空白字符串", response);
+        return frame_make_error(
+            request->request_id, "INVALID_REQUEST", "query必须是非空白字符串", response);
     }
     const char *query_text = json_object_get_string(query);
     const size_t query_length = (size_t)json_object_get_string_len(query);
     if (text_is_blank(query_text, query_length)) {
         json_object_put(body);
-        return frame_make_error(request->request_id, "INVALID_REQUEST",
-                                "query必须是非空白字符串", response);
+        return frame_make_error(
+            request->request_id, "INVALID_REQUEST", "query必须是非空白字符串", response);
     }
 
     json_object *result = json_object_new_object();
     json_object *text = json_object_new_string_len("server received: ", 17);
     if (result == NULL || text == NULL) {
-        if (result != NULL) json_object_put(result);
-        if (text != NULL) json_object_put(text);
+        if (result != NULL) {
+            json_object_put(result);
+        }
+        if (text != NULL) {
+            json_object_put(text);
+        }
         json_object_put(body);
         return -1;
     }
@@ -255,8 +260,10 @@ int handle_fixed_request(const Frame *request, Frame *response)
     memcpy(response_text, json_object_get_string(text), prefix_length);
     memcpy(response_text + prefix_length, query_text, query_length);
     response_text[prefix_length + query_length] = '\0';
-    json_object_object_add(result, "text", json_object_new_string_len(response_text,
-                                                                        (int)(prefix_length + query_length)));
+    json_object_object_add(
+        result,
+        "text",
+        json_object_new_string_len(response_text, (int)(prefix_length + query_length)));
     free(response_text);
     json_object_put(text);
     json_object_object_add(result, "sources", json_object_new_array());
@@ -264,11 +271,11 @@ int handle_fixed_request(const Frame *request, Frame *response)
     const size_t encoded_length = strlen(encoded);
     int status;
     if (encoded_length > RAGENT_MAX_BODY_SIZE) {
-        status = frame_make_error(request->request_id, "INTERNAL_ERROR",
-                                  "编码后的响应超过消息体上限", response);
+        status = frame_make_error(
+            request->request_id, "INTERNAL_ERROR", "编码后的响应超过消息体上限", response);
     } else {
-        status = frame_set_body(response, MESSAGE_RESPONSE, request->request_id,
-                                encoded, encoded_length);
+        status = frame_set_body(
+            response, MESSAGE_RESPONSE, request->request_id, encoded, encoded_length);
     }
     json_object_put(result);
     json_object_put(body);

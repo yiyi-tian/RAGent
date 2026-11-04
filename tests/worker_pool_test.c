@@ -39,13 +39,18 @@ int main(void)
     submit(pool, 2);
     submit(pool, 3);
     unsigned tries = 0;
-    while (!worker_pool_test_waiting_results(pool) && tries++ < 3000) pause_briefly();
+    while (!worker_pool_test_waiting_results(pool) && tries++ < 3000) {
+        pause_briefly();
+    }
     assert(worker_pool_test_waiting_results(pool) > 0);
     unsigned received = 0;
     tries = 0;
     while (received < 3 && tries++ < 3000) {
         WorkItem result;
-        if (!worker_pool_take(pool, &result)) { pause_briefly(); continue; }
+        if (!worker_pool_take(pool, &result)) {
+            pause_briefly();
+            continue;
+        }
         assert(result.connection_id == 3 && result.frame.type == MESSAGE_RESPONSE);
         frame_destroy(&result.frame);
         ++received;
@@ -54,7 +59,9 @@ int main(void)
     submit(pool, 4);
     submit(pool, 5);
     tries = 0;
-    while (!worker_pool_test_waiting_results(pool) && tries++ < 3000) pause_briefly();
+    while (!worker_pool_test_waiting_results(pool) && tries++ < 3000) {
+        pause_briefly();
+    }
     assert(worker_pool_test_waiting_results(pool) > 0);
     worker_pool_destroy(pool);
     return 0;

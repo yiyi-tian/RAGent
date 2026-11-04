@@ -1,4 +1,5 @@
 """使用仅测试版本的可控慢任务验证并发与过载。"""
+
 import os
 import signal
 import subprocess
@@ -20,7 +21,9 @@ def wait_for_log(server, text):
 
 class ConcurrencyTests(unittest.TestCase):
     def test_overload_ping_and_disconnect(self):
-        server = RunningServer("--worker-threads", "1", "--task-capacity", "1", "--result-capacity", "1")
+        server = RunningServer(
+            "--worker-threads", "1", "--task-capacity", "1", "--result-capacity", "1"
+        )
         try:
             with server.connect() as first:
                 first.sendall(frame(request_id=1))
@@ -37,7 +40,9 @@ class ConcurrencyTests(unittest.TestCase):
                 self.assertEqual(receive(second), (201, 1, {}))
                 wait_for_log(server, "stage=discard reason=disconnect")
                 second.sendall(frame(request_id=2, body=dump({"query": "new"})))
-                self.assertEqual(receive(second), (100, 2, {"text": "server received: new", "sources": []}))
+                self.assertEqual(
+                    receive(second), (100, 2, {"text": "server received: new", "sources": []})
+                )
         finally:
             server.close()
 
@@ -58,9 +63,15 @@ class ConcurrencyTests(unittest.TestCase):
             server.close()
 
     def test_invalid_pool_options(self):
-        for option, value in (("--worker-threads", "0"), ("--worker-threads", "65"),
-                              ("--task-capacity", "0"), ("--result-capacity", "4097")):
-            result = subprocess.run([SERVER, option, value], capture_output=True, text=True, timeout=3)
+        for option, value in (
+            ("--worker-threads", "0"),
+            ("--worker-threads", "65"),
+            ("--task-capacity", "0"),
+            ("--result-capacity", "4097"),
+        ):
+            result = subprocess.run(
+                [SERVER, option, value], capture_output=True, text=True, timeout=3
+            )
             self.assertEqual(result.returncode, 2)
 
     def test_shutdown_with_waiting_work(self):

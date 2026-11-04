@@ -1,82 +1,75 @@
-# RAGent 模块接口草案
+# RAGent 模块接口
 
-状态：TCP帧格式已确认并在C17阶段一实现。本文约定C网络与执行模块及Python Agent的职责、所有权和数据流；当前实现网络、协议、线程池及固定响应，不预生成未使用的业务模块。跨服务HTTP字段和具体函数签名在相应阶段开始时冻结。
+本文描述当前网络、Agent、模型与检索接口。真实命令执行器与沙箱的接口尚待确定。
+TCP 帧格式以[协议规范](protocol.md)为准。
 
-## 接口原则
+## C 网络与资源所有权
 
-- C17用于客户端、网络服务和安全敏感的受控执行；Python与LangChain负责在线Agent编排及Linux资料离线入库。
-- JSON对象由json-c解析和构造；跨模块传递时应明确借用或持有关系，不能返回失效的内部字符串指针。
-- 使用值语义或显式所有权；动态内存由创建模块释放，错误路径同样释放。
-- 网络线程拥有Socket和连接状态；工作线程只能通过稳定ID返回完成结果，不能写Socket。
-- C网络服务与Python Agent使用内部HTTP/JSON；Agent通过HTTP/JSON访问模型、Embedding和Qdrant。
+`Frame` 包含类型、request_id、body 和 body_length；所有者通过 `frame_destroy`
+释放 body。编码函数返回独立帧缓冲，由调用方释放。`FrameDecoder` 持有累计接收缓冲。
 
-## 阶段一线上类型
+网络线程拥有 Socket、连接状态和发送缓冲，处理 accept、帧解码、PING、部分写入。
+工作任务持有完整请求数据和稳定 connection_id，不借用网络缓冲，也不写客户端 Socket。
+完成结果通过有界队列和 eventfd 回到网络线程；断连结果丢弃，队列满返回 SERVER_BUSY。
 
-公共协议Frame在C中包含message_type、request_id、body指针和body_length。body由Frame所有者管理，释放统一经frame_destroy；编码函数返回新分配的完整帧缓冲，由调用者释放。FrameDecoder拥有其累计接收缓冲，调用者显式初始化和销毁。
+HTTP 配置在线程启动前复制，调用期间不变。C 工作线程使用 libcurl 调用 Agent，
+限制响应为 1 MiB，并检查 HTTP 状态、JSON 字段及错误码。返回的 Frame 仍由调用方释放。
+未配置 agent_url 时使用固定响应处理器。
 
-请求类型为CHAT_REQUEST、RAG_REQUEST、CMD_REQUEST、AGENT_REQUEST；四种请求的阶段一业务体均为JSON对象，要求query为非空白字符串。响应沿用原request_id。协议线上布局不依赖C结构体内存布局。
+## 内部 HTTP 接口
 
-## 网络服务与并发边界
+Python 默认监听 `127.0.0.1:9001`，提供 `POST /agent`：
 
-单epoll网络线程负责accept、增量帧解码、request_id校验、PING/PONG、发送队列和部分写入。连接ID在进程生命周期内不复用。每连接接收/发送缓冲、任务队列和完成队列都必须有界。
+```json
+{"request_id":"1","mode":"rag","query":"如何列出隐藏文件？"}
+```
 
-工作线程池接收拥有完整请求数据的任务。任务包含connection_id和request_id，不保存指向网络缓冲区的借用指针。完成结果以同一ID返回网络线程；连接断开或连接ID不存在时丢弃并记录原因。队列满时生成SERVER_BUSY，不允许网络线程等待业务或队列容量。
+request_id 使用字符串避免 64 位整数精度问题；mode 为 chat、rag、cmd 或 agent。
+成功返回 `text` 字符串、`sources` 数组和 `actions` 数组。来源形状见 TCP 协议；
+actions 每项包含 `tool`、`status`、`summary`，status 为 success 或 failed。
+失败返回 `code`、`message`，C 负责映射为 TCP ERROR 并保留原 request_id。
 
-## Agent上下文与工具接口
+非法请求使用 INVALID_REQUEST；模型限流使用 SERVER_BUSY；模型超时使用
+UPSTREAM_TIMEOUT；模型连接、认证、非法响应及必需检索失败使用 UPSTREAM_UNAVAILABLE。
+未预期异常使用 INTERNAL_ERROR。外部服务错误正文不直接返回客户端。
 
-Python LangChain Agent为每个AGENT请求创建独立上下文，保存原始query、当前模型消息、工具调用和结果、已检索来源及操作摘要。请求结束或超时后释放上下文，不跨请求保存模型会话。
+## Agent 与工具
 
-逻辑工具调用由工具名和结构化JSON参数构成。Agent负责按模式验证工具名、参数字段类型、范围和权限；具体工具只执行已验证的操作并返回结构化结果或明确错误。模型的tool_calls必须逐项与结果对应，结果写回本次请求消息后再调用模型。互相独立的调用可以并行；写操作之间的依赖由Agent顺序处理。
+每请求创建独立消息上下文，保存原始问题、模型实际返回的 AIMessage、工具调用 ID
+及对应 ToolMessage。工具执行前校验工具名、参数和模式权限，独立调用并行执行。
+工具失败保留失败摘要与成功结果，不伪造调用历史。
 
 | 模式 | 工具策略 |
 |---|---|
-| CHAT | 不提供工具，只调用模型 |
-| RAG | 必须先调用Linux手册检索，再让模型基于检索内容回答 |
-| CMD | 只提供允许的操作工具，由模型解释执行结果 |
-| AGENT | 提供通用对话能力及本阶段授权的检索、只读和工作区工具 |
+| CHAT | 无工具 |
+| RAG | 编排层强制检索后提供证据，不插入伪造的模型工具调用 |
+| CMD | 仅模拟 diagnose，target 为 memory |
+| AGENT | search_linux_manual 与模拟 diagnose |
 
-达到模型轮数、工具数量或总超时上限时形成终态响应。部分工具失败时保留成功结果并明确列出失败步骤，不把失败包装成成功。具体上限按配置提供，并在Mock Agent阶段确定默认值。
+每请求最多 4 次模型调用，每轮最多 4 个工具。服务总时限默认 120 秒，可通过
+`--request-timeout` 设置；无成功结果时总超时返回错误，有成功工具结果时返回未完成摘要。
+达到调用限制返回限制说明及已有摘要。请求结束不保留跨请求会话。
 
-## HTTP服务适配层
+## 模型与检索
 
-Python LangChain模型适配器通过可配置的OpenAI兼容Chat Completions接口发送消息、工具定义和工具结果，返回最终文本、tool_calls或结构化错误。当前目标模型为DeepSeek；base URL、模型标识、密钥、超时、输出上限及并发由运行配置提供。密钥不得进入日志或仓库。每轮请求显式携带所需消息，不依赖模型服务保持会话。上下文保留模型实际返回的assistant tool_calls消息，不能在历史中插入模型没有生成的伪造调用；工具选择采用允许模型返回最终答复或调用工具的模式。接口兼容细节以[DeepSeek工具调用文档](https://api-docs.deepseek.com/guides/tool_calls/)为例，并在接入阶段复验。
+`--model mock|deepseek` 选择模型，默认 mock。DeepSeek 适配器使用 LangChain
+ChatOpenAI，按模式绑定工具，采用非流式、非思考模式，不自动重试，并发上限为 4。
+环境变量见 `.env.example`；启动时由 shell 导出。配置缺失或非法时启动失败。
+空回答、非法工具参数与输出截断形成明确错误。
 
-检索适配器将query转换为Embedding请求并查询Qdrant，返回带source、chunk_id、文本和相关度的检索块。Agent负责将检索结果放入模型上下文并形成最终TCP sources。HTTP失败、超时、非法JSON和过大响应均映射为稳定的项目错误，不直接透传上游错误页。
+`--retrieval mock|qdrant` 选择检索，默认 mock。在线适配器调用
+`rag.search.search_linux_manual(query, embedding, store, limit=5)`，在工作线程执行同步
+Embedding 与 Qdrant HTTP 请求，避免阻塞事件循环。来源仅投影为协议字段，不泄露内部路径。
+空结果提供未找到资料的说明。取消异步请求不会强行终止已开始的同步线程请求。
 
-精确HTTP路径、JSON字段、tool_calls格式与错误映射在Mock服务阶段结合目标兼容服务验证后冻结。模型流式输出暂不实现。
+离线入库不使用 LangChain，不参与在线请求处理，负责抽取、分块、来源元数据和向量写入。
+集合一致性、重复导入和快照操作见[知识库说明](rag.md)。
 
-当前独立检索原型在 `rag.search` 提供 `search_linux_manual(query, embedding, store, limit=5)`，返回块文本、来源、chunk_id、语言和相似度；失败时抛出明确异常。该 Python 接口仍为草案，需与 LangChain Agent 负责人确认后再联调。
+## 配置与待实现边界
 
-## Linux资料导入
+`config/agent.json` 配置网络、线程池和 Python HTTP 地址，HTTP 时限为 125 秒。
+模型和检索方式由 Python 启动参数选择。真实入口客户端需使用 `--timeout-ms 130000`。
+模型单次超时与 Token 上限由环境提供。不带配置文件启动 C 服务时使用固定响应。
 
-Python离线脚本负责中文优先的Linux命令手册和基础知识资料的抽取、清洗、切分、来源元数据、Embedding调用和Qdrant写入。不引入LangChain；不把项目文档作为Linux知识库语料。入库数据保留来源、版本/发行版及稳定chunk标识，供检索来源展示和重复导入检查。
-
-离线入库脚本不参与在线请求处理；Python Agent在线经HTTP接口查询。数据源、许可检查、首批资料清单和分块参数在RAG阶段冻结。
-
-## 命令操作和沙箱
-
-模型通过工具调用提出命令操作；输入形式、执行方式和权限策略尚待小组确认。执行器负责落实权限边界，并负责子进程启动、捕获输出、超时终止和waitpid回收。
-
-- 只读白名单操作可自动执行，限于已声明且不暴露密钥或任意私有文件的诊断操作。
-- 白名单写操作可自动执行，但只能修改专用工作区，并通过rootless容器隔离。容器根文件系统只读，工作区为唯一读写挂载；使用非特权身份、丢弃多余capabilities、默认禁网、seccomp及cgroups资源限制。Agent不得访问Docker管理套接字。
-- 宿主机系统级写操作逐次确认；具体执行权限和保护机制在实现前确定。未完成隔离能力时关闭自动写操作，不允许裸执行降级。
-
-操作结果包含完成/失败状态、受限摘要和必要的退出信息；敏感内容、无限stderr和完整私有文档不能进入日志或响应。当前不实现命令工具或沙箱。
-
-## 结果、配置和可观测性
-
-逻辑结果包含text、sources和操作摘要，或稳定的错误code/message。成功和失败状态互斥。最终响应沿用最初的request_id。操作摘要格式在Agent协议阶段冻结。
-
-配置包含监听地址、连接/缓冲/队列上限、模型与检索服务地址、模型标识、超时、推理并发、输出限制、工具轮数及沙箱资源限制。密钥从环境变量或受限配置读取。
-
-日志可关联connection_id、request_id、阶段、工具名、耗时、队列等待和最终状态；不得记录完整用户问题、密钥、完整知识块或未经限制的工具输出。
-
-## 阶段验收
-
-- 阶段1：C17构建、四种请求固定响应、request_id、半包/粘包、多客户端和资源边界。
-- 阶段2：工作队列满、并发慢任务、断连、fd复用、完成队列背压和有序停止。
-- 阶段3：Mock模型最终回答、单轮/多轮tool_calls、并行独立调用、工具名/参数拒绝、超时、部分失败和调用上限。
-- 阶段4：中文Linux资料导入、重复导入控制、准确来源、空结果和检索服务故障。
-- 阶段5：DeepSeek兼容HTTP成功、认证/限流/超时、非法JSON、模型最终回答和工具调用往返。
-- 阶段6：权限策略、参数校验、路径逃逸防护、容器隔离、资源限制、操作确认、输出上限和子进程回收。
-- 阶段7：以实际单机模型逐步压测1000个端到端在途请求，记录队列等待、端到端延迟分位数、失败率及硬件配置；模型生成并发仍由硬件限制。
+真实命令执行器尚未实现；其权限、结构化输入、超时、输出限制和子进程回收需在实现前确定。
+自动写操作必须限制在隔离工作区，隔离不可用时禁用，不向 Agent 暴露 Docker 管理套接字。

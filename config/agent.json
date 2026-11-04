@@ -5,5 +5,7 @@
   "max_pending_bytes": 2097152,
   "worker_threads": 4,
   "task_capacity": 256,
-  "result_capacity": 256
+  "result_capacity": 256,
+  "agent_url": "http://127.0.0.1:9001/agent",
+  "agent_timeout_ms": 125000
 }

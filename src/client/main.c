@@ -4,6 +4,7 @@
 #include "protocol/protocol.h"
 
 #include <errno.h>
+#include <math.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <poll.h>
@@ -17,12 +18,7 @@
 #include <time.h>
 #include <unistd.h>
 
-typedef enum {
-    CLIENT_MODE_AGENT,
-    CLIENT_MODE_CHAT,
-    CLIENT_MODE_RAG,
-    CLIENT_MODE_CMD
-} ClientMode;
+typedef enum { CLIENT_MODE_AGENT, CLIENT_MODE_CHAT, CLIENT_MODE_RAG, CLIENT_MODE_CMD } ClientMode;
 
 typedef struct {
     char host[INET_ADDRSTRLEN];
@@ -51,10 +47,14 @@ static void interrupt_handler(int signal_number)
 static const char *mode_name(ClientMode mode)
 {
     switch (mode) {
-    case CLIENT_MODE_AGENT: return "agent";
-    case CLIENT_MODE_CHAT: return "chat";
-    case CLIENT_MODE_RAG: return "rag";
-    case CLIENT_MODE_CMD: return "cmd";
+    case CLIENT_MODE_AGENT:
+        return "agent";
+    case CLIENT_MODE_CHAT:
+        return "chat";
+    case CLIENT_MODE_RAG:
+        return "rag";
+    case CLIENT_MODE_CMD:
+        return "cmd";
     }
     return "agent";
 }
@@ -62,21 +62,31 @@ static const char *mode_name(ClientMode mode)
 static MessageType mode_message_type(ClientMode mode)
 {
     switch (mode) {
-    case CLIENT_MODE_AGENT: return MESSAGE_AGENT_REQUEST;
-    case CLIENT_MODE_CHAT: return MESSAGE_CHAT_REQUEST;
-    case CLIENT_MODE_RAG: return MESSAGE_RAG_REQUEST;
-    case CLIENT_MODE_CMD: return MESSAGE_CMD_REQUEST;
+    case CLIENT_MODE_AGENT:
+        return MESSAGE_AGENT_REQUEST;
+    case CLIENT_MODE_CHAT:
+        return MESSAGE_CHAT_REQUEST;
+    case CLIENT_MODE_RAG:
+        return MESSAGE_RAG_REQUEST;
+    case CLIENT_MODE_CMD:
+        return MESSAGE_CMD_REQUEST;
     }
     return MESSAGE_AGENT_REQUEST;
 }
 
 static int parse_mode(const char *value, ClientMode *mode)
 {
-    if (strcmp(value, "agent") == 0) *mode = CLIENT_MODE_AGENT;
-    else if (strcmp(value, "chat") == 0) *mode = CLIENT_MODE_CHAT;
-    else if (strcmp(value, "rag") == 0) *mode = CLIENT_MODE_RAG;
-    else if (strcmp(value, "cmd") == 0) *mode = CLIENT_MODE_CMD;
-    else return -1;
+    if (strcmp(value, "agent") == 0) {
+        *mode = CLIENT_MODE_AGENT;
+    } else if (strcmp(value, "chat") == 0) {
+        *mode = CLIENT_MODE_CHAT;
+    } else if (strcmp(value, "rag") == 0) {
+        *mode = CLIENT_MODE_RAG;
+    } else if (strcmp(value, "cmd") == 0) {
+        *mode = CLIENT_MODE_CMD;
+    } else {
+        return -1;
+    }
     return 0;
 }
 
@@ -99,16 +109,21 @@ static int parse_options(int argc, char **argv, Options *options)
         unsigned parsed = 0;
         if (strcmp(argument, "--host") == 0) {
             struct sockaddr_in address;
-            if (strlen(value) >= sizeof(options->host) || set_ipv4_address(value, 0, &address) != 0) {
+            if (strlen(value) >= sizeof(options->host) ||
+                set_ipv4_address(value, 0, &address) != 0) {
                 fprintf(stderr, "host必须是IPv4地址\n");
                 return -1;
             }
             strcpy(options->host, value);
         } else if (strcmp(argument, "--port") == 0) {
-            if (parse_unsigned(value, 1, 65535, &parsed) != 0) goto invalid_number;
+            if (parse_unsigned(value, 1, 65535, &parsed) != 0) {
+                goto invalid_number;
+            }
             options->port = parsed;
         } else if (strcmp(argument, "--timeout-ms") == 0) {
-            if (parse_unsigned(value, 1, 3600000, &parsed) != 0) goto invalid_number;
+            if (parse_unsigned(value, 1, 3600000, &parsed) != 0) {
+                goto invalid_number;
+            }
             options->timeout_ms = parsed;
         } else if (strcmp(argument, "--mode") == 0) {
             if (parse_mode(value, &options->mode) != 0) {
@@ -124,7 +139,7 @@ static int parse_options(int argc, char **argv, Options *options)
             return -1;
         }
         continue;
-invalid_number:
+    invalid_number:
         fprintf(stderr, "数值参数格式错误或超出范围: %s\n", argument);
         return -1;
     }
@@ -144,7 +159,9 @@ static int wait_socket(int fd, short events, int64_t deadline_ms)
 {
     while (!interrupted) {
         struct timespec now;
-        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            return -1;
+        }
         const int64_t current_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
         const int64_t remaining = deadline_ms - current_ms;
         if (remaining <= 0) {
@@ -155,11 +172,17 @@ static int wait_socket(int fd, short events, int64_t deadline_ms)
         struct pollfd descriptor = {.fd = fd, .events = events, .revents = 0};
         const int count = poll(&descriptor, 1, remaining > INT_MAX ? INT_MAX : (int)remaining);
         if (count < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) {
+                continue;
+            }
             return -1;
         }
-        if (count == 0) continue;
-        if ((descriptor.revents & (events | POLLERR | POLLHUP)) != 0) return 0;
+        if (count == 0) {
+            continue;
+        }
+        if ((descriptor.revents & (events | POLLERR | POLLHUP)) != 0) {
+            return 0;
+        }
         if ((descriptor.revents & POLLNVAL) != 0) {
             errno = EBADF;
             return -1;
@@ -183,16 +206,26 @@ static int client_init(Client *client, const Options *options)
     client->timeout_ms = options->timeout_ms;
     client->next_request_id = 1;
     frame_decoder_init(&client->decoder);
-    if (client->socket_fd < 0) return -1;
+    if (client->socket_fd < 0) {
+        return -1;
+    }
     struct sockaddr_in address;
-    if (set_ipv4_address(options->host, options->port, &address) != 0) goto failure;
+    if (set_ipv4_address(options->host, options->port, &address) != 0) {
+        goto failure;
+    }
     const int result = connect(client->socket_fd, (struct sockaddr *)&address, sizeof(address));
-    if (result < 0 && errno != EINPROGRESS) goto failure;
+    if (result < 0 && errno != EINPROGRESS) {
+        goto failure;
+    }
     if (result < 0) {
-        if (wait_socket(client->socket_fd, POLLOUT, deadline_after(client->timeout_ms)) != 0) goto failure;
+        if (wait_socket(client->socket_fd, POLLOUT, deadline_after(client->timeout_ms)) != 0) {
+            goto failure;
+        }
         int socket_error = 0;
         socklen_t error_size = sizeof(socket_error);
-        if (getsockopt(client->socket_fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_size) != 0) goto failure;
+        if (getsockopt(client->socket_fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_size) != 0) {
+            goto failure;
+        }
         if (socket_error != 0) {
             errno = socket_error;
             goto failure;
@@ -200,7 +233,8 @@ static int client_init(Client *client, const Options *options)
     }
     return 0;
 
-failure: {
+failure:
+    {
         const int saved_errno = errno;
         close(client->socket_fd);
         client->socket_fd = -1;
@@ -212,7 +246,9 @@ failure: {
 
 static void client_destroy(Client *client)
 {
-    if (client->socket_fd >= 0) close(client->socket_fd);
+    if (client->socket_fd >= 0) {
+        close(client->socket_fd);
+    }
     frame_decoder_destroy(&client->decoder);
     client->socket_fd = -1;
 }
@@ -259,12 +295,35 @@ static int display_response(const Frame *frame, MessageType request_type)
         fprintf(stderr, "非法成功响应\n");
         return -1;
     }
-    if (json_object_array_length(sources) != 0) {
-        json_object_put(body);
-        fprintf(stderr, "第一阶段不支持非空sources\n");
-        return -1;
+    for (size_t index = 0; index < json_object_array_length(sources); ++index) {
+        json_object *source = json_object_array_get_idx(sources, index);
+        json_object *name = NULL;
+        json_object *chunk_id = NULL;
+        json_object *excerpt = NULL;
+        json_object *score = NULL;
+        if (!json_object_is_type(source, json_type_object) ||
+            !json_object_object_get_ex(source, "source", &name) ||
+            !json_object_is_type(name, json_type_string) ||
+            !json_object_object_get_ex(source, "chunk_id", &chunk_id) ||
+            !json_object_is_type(chunk_id, json_type_string) ||
+            !json_object_object_get_ex(source, "text", &excerpt) ||
+            !json_object_is_type(excerpt, json_type_string) ||
+            !json_object_object_get_ex(source, "score", &score) ||
+            !(json_object_is_type(score, json_type_double) ||
+              json_object_is_type(score, json_type_int)) ||
+            !isfinite(json_object_get_double(score))) {
+            json_object_put(body);
+            fprintf(stderr, "非法检索来源\n");
+            return -1;
+        }
     }
     puts(json_object_get_string(text));
+    for (size_t index = 0; index < json_object_array_length(sources); ++index) {
+        json_object *source = json_object_array_get_idx(sources, index);
+        printf("来源：%s [%s]\n",
+               json_object_get_string(json_object_object_get(source, "source")),
+               json_object_get_string(json_object_object_get(source, "chunk_id")));
+    }
     json_object_put(body);
     return 0;
 }
@@ -276,13 +335,17 @@ static int client_request(Client *client, MessageType type, const char *query)
         return -1;
     }
     json_object *body = json_object_new_object();
-    if (body == NULL) return -1;
+    if (body == NULL) {
+        return -1;
+    }
     if (type != MESSAGE_PING) {
         json_object_object_add(body, "query", json_object_new_string(query));
     }
     const char *json = json_object_to_json_string_ext(body, JSON_C_TO_STRING_PLAIN);
-    Frame request = {.type = type, .request_id = client->next_request_id++,
-                     .body = (unsigned char *)json, .body_length = strlen(json)};
+    Frame request = {.type = type,
+                     .request_id = client->next_request_id++,
+                     .body = (unsigned char *)json,
+                     .body_length = strlen(json)};
     unsigned char *encoded = NULL;
     size_t encoded_length = 0;
     if (frame_encode(&request, &encoded, &encoded_length) != 0) {
@@ -293,11 +356,15 @@ static int client_request(Client *client, MessageType type, const char *query)
     const int64_t deadline = deadline_after(client->timeout_ms);
     size_t offset = 0;
     while (offset < encoded_length) {
-        if (wait_socket(client->socket_fd, POLLOUT, deadline) != 0) goto io_error;
-        const ssize_t sent = send(client->socket_fd, encoded + offset,
-                                  encoded_length - offset, MSG_NOSIGNAL);
+        if (wait_socket(client->socket_fd, POLLOUT, deadline) != 0) {
+            goto io_error;
+        }
+        const ssize_t sent =
+            send(client->socket_fd, encoded + offset, encoded_length - offset, MSG_NOSIGNAL);
         if (sent < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
             goto io_error;
         }
         if (sent == 0) {
@@ -315,11 +382,13 @@ static int client_request(Client *client, MessageType type, const char *query)
         const char *decode_error = NULL;
         const int decoded = frame_decoder_next(&client->decoder, &response, &decode_error);
         if (decoded < 0) {
-            fprintf(stderr, "服务端响应帧非法: %s\n", decode_error == NULL ? "未知错误" : decode_error);
+            fprintf(
+                stderr, "服务端响应帧非法: %s\n", decode_error == NULL ? "未知错误" : decode_error);
             return -1;
         }
         if (decoded > 0) {
-            if (response.request_id != request.request_id || !frame_decoder_empty(&client->decoder)) {
+            if (response.request_id != request.request_id ||
+                !frame_decoder_empty(&client->decoder)) {
                 frame_destroy(&response);
                 fprintf(stderr, "服务端响应ID或帧数量错误\n");
                 return -1;
@@ -328,10 +397,14 @@ static int client_request(Client *client, MessageType type, const char *query)
             frame_destroy(&response);
             return displayed;
         }
-        if (wait_socket(client->socket_fd, POLLIN, deadline) != 0) return -1;
+        if (wait_socket(client->socket_fd, POLLIN, deadline) != 0) {
+            return -1;
+        }
         const ssize_t received = recv(client->socket_fd, buffer, sizeof(buffer), 0);
         if (received < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
             return -1;
         }
         if (received == 0) {
@@ -353,19 +426,26 @@ io_error:
 
 static void print_help(void)
 {
-    puts("/agent [问题]  Agent自动选择可用工具（第一阶段仅固定响应）\n"
-         "/chat [问题]   普通对话模式（第一阶段仅固定响应）\n"
-         "/rag [问题]    知识库问答模式（第一阶段仅固定响应）\n"
-         "/cmd [问题]    受控操作模式（第一阶段仅固定响应）\n"
-         "/back 返回Agent模式；/help 帮助；/status 网络检查；/clear 清屏；/exit 退出\n"
-         "/list 在CMD模式说明当前操作支持情况。");
+    puts("/agent [问题]  Agent 自动选择可用工具\n"
+         "/chat [问题]   模型对话，不调用工具\n"
+         "/rag [问题]    检索 Linux 手册后回答，并显示来源\n"
+         "/cmd [问题]    调用诊断工具并解释结果（当前为模拟诊断）\n"
+         "不带问题时切换模式；带问题时仅发送本次请求。能力取决于服务端配置。\n"
+         "/back 返回 Agent 模式；/help 帮助；/status 网络检查；/clear 清屏；/exit 退出\n"
+         "/list 在 CMD 模式显示诊断工具说明。");
 }
 
 static int repl(Client *client, const Options *options)
 {
-    puts("\nConnected to Agent");
+    puts("\n"
+         "  ____      _    ____            _   \n"
+         " |  _ \\    / \\  / ___| ___ _ __ | |_ \n"
+         " | |_) |  / _ \\| |  _ / _ \\ '_ \\| __|\n"
+         " |  _ <  / ___ \\ |_| |  __/ | | | |_ \n"
+         " |_| \\_\\/_/   \\_\\____|\\___|_| |_|\\__|\n");
     printf("连接地址 %s:%u，默认使用 Agent 模式；输入 /help 查看帮助。\n",
-           options->host, options->port);
+           options->host,
+           options->port);
     ClientMode mode = CLIENT_MODE_AGENT;
     char *line = NULL;
     size_t capacity = 0;
@@ -373,15 +453,26 @@ static int repl(Client *client, const Options *options)
         printf("%s> ", mode_name(mode));
         fflush(stdout);
         const ssize_t length = getline(&line, &capacity, stdin);
-        if (length < 0) break;
+        if (length < 0) {
+            break;
+        }
         size_t input_start = 0;
         size_t input_end = (size_t)length;
-        while (input_start < input_end && strchr(" \t\r\n", line[input_start]) != NULL) ++input_start;
-        while (input_end > input_start && strchr(" \t\r\n", line[input_end - 1]) != NULL) --input_end;
-        if (input_start == input_end) continue;
+        while (input_start < input_end && strchr(" \t\r\n", line[input_start]) != NULL) {
+            ++input_start;
+        }
+        while (input_end > input_start && strchr(" \t\r\n", line[input_end - 1]) != NULL) {
+            --input_end;
+        }
+        if (input_start == input_end) {
+            continue;
+        }
         if (line[input_start] != '/') {
-            char *query = strndup(line, (size_t)length - (line[(size_t)length - 1] == '\n' ? 1U : 0U));
-            if (query == NULL) break;
+            char *query =
+                strndup(line, (size_t)length - (line[(size_t)length - 1] == '\n' ? 1U : 0U));
+            if (query == NULL) {
+                break;
+            }
             const int result = client_request(client, mode_message_type(mode), query);
             free(query);
             if (result < 0) {
@@ -393,21 +484,32 @@ static int repl(Client *client, const Options *options)
 
         const size_t command_start = input_start;
         size_t command_end = command_start;
-        while (command_end < input_end && line[command_end] != ' ' && line[command_end] != '\t') ++command_end;
+        while (command_end < input_end && line[command_end] != ' ' && line[command_end] != '\t') {
+            ++command_end;
+        }
         size_t argument_start = command_end;
-        while (argument_start < input_end && (line[argument_start] == ' ' || line[argument_start] == '\t')) ++argument_start;
+        while (argument_start < input_end &&
+               (line[argument_start] == ' ' || line[argument_start] == '\t')) {
+            ++argument_start;
+        }
         const char *argument = line + argument_start;
         const size_t argument_length = input_end - argument_start;
         const size_t command_length = command_end - command_start;
         struct {
             const char *name;
             ClientMode mode;
-        } commands[] = {{"/agent", CLIENT_MODE_AGENT}, {"/chat", CLIENT_MODE_CHAT},
-                        {"/rag", CLIENT_MODE_RAG}, {"/cmd", CLIENT_MODE_CMD}};
+        } commands[] = {
+            {"/agent", CLIENT_MODE_AGENT},
+            {"/chat", CLIENT_MODE_CHAT},
+            {"/rag", CLIENT_MODE_RAG},
+            {"/cmd", CLIENT_MODE_CMD},
+        };
         bool mode_command = false;
         for (size_t index = 0; index < sizeof(commands) / sizeof(commands[0]); ++index) {
             if (strlen(commands[index].name) != command_length ||
-                memcmp(line + command_start, commands[index].name, command_length) != 0) continue;
+                memcmp(line + command_start, commands[index].name, command_length) != 0) {
+                continue;
+            }
             mode_command = true;
             if (argument_length == 0) {
                 mode = commands[index].mode;
@@ -417,7 +519,8 @@ static int repl(Client *client, const Options *options)
                     free(line);
                     return -1;
                 }
-                const int result = client_request(client, mode_message_type(commands[index].mode), query);
+                const int result =
+                    client_request(client, mode_message_type(commands[index].mode), query);
                 free(query);
                 if (result < 0) {
                     free(line);
@@ -426,27 +529,39 @@ static int repl(Client *client, const Options *options)
             }
             break;
         }
-        if (mode_command) continue;
+        if (mode_command) {
+            continue;
+        }
         if (argument_length > 0) {
             puts("此命令不接受参数。");
             continue;
         }
         const size_t command_length_exit = strlen("/exit");
-        if (command_length == command_length_exit && memcmp(line + command_start, "/exit", command_length) == 0) break;
-        if (command_length == strlen("/back") && memcmp(line + command_start, "/back", command_length) == 0) {
+        if (command_length == command_length_exit &&
+            memcmp(line + command_start, "/exit", command_length) == 0) {
+            break;
+        }
+        if (command_length == strlen("/back") &&
+            memcmp(line + command_start, "/back", command_length) == 0) {
             mode = CLIENT_MODE_AGENT;
-        } else if ((command_length == strlen("/help") && memcmp(line + command_start, "/help", command_length) == 0) ||
+        } else if ((command_length == strlen("/help") &&
+                    memcmp(line + command_start, "/help", command_length) == 0) ||
                    (command_length == 1 && line[command_start] == '/')) {
             print_help();
-        } else if (command_length == strlen("/clear") && memcmp(line + command_start, "/clear", command_length) == 0) {
+        } else if (command_length == strlen("/clear") &&
+                   memcmp(line + command_start, "/clear", command_length) == 0) {
             fputs("\033[2J\033[H", stdout);
-        } else if (command_length == strlen("/status") && memcmp(line + command_start, "/status", command_length) == 0) {
+        } else if (command_length == strlen("/status") &&
+                   memcmp(line + command_start, "/status", command_length) == 0) {
             if (client_request(client, MESSAGE_PING, "") < 0) {
                 free(line);
                 return -1;
             }
-        } else if (command_length == strlen("/list") && memcmp(line + command_start, "/list", command_length) == 0) {
-            puts(mode == CLIENT_MODE_CMD ? "第一阶段不执行命令，操作列表将在命令执行阶段提供。" : "请先进入 /cmd 模式。");
+        } else if (command_length == strlen("/list") &&
+                   memcmp(line + command_start, "/list", command_length) == 0) {
+            puts(mode == CLIENT_MODE_CMD ? "diagnose(target=memory)：模拟内存诊断，不读取宿主机指标。\n"
+                                         "实际可用能力取决于服务端配置。"
+                                         : "请先进入 /cmd 模式。");
         } else {
             puts("未知命令，输入 /help 查看帮助。");
         }
@@ -483,11 +598,17 @@ int main(int argc, char **argv)
     int result;
     if (options.once) {
         result = client_request(&client, mode_message_type(options.mode), options.query);
-        result = result == 0 ? 0 : (result > 0 ? 3 : 1);
+        if (result > 0) {
+            result = 3;
+        } else if (result < 0) {
+            result = 1;
+        }
     } else {
         result = repl(&client, &options) == 0 ? 0 : 1;
     }
     client_destroy(&client);
-    if (interrupted && !options.once) return 0;
+    if (interrupted && !options.once) {
+        return 0;
+    }
     return result;
 }

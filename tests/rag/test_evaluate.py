@@ -1,4 +1,5 @@
 """验证来源评测统计及失败路径。"""
+
 import json
 from pathlib import Path
 import tempfile
@@ -10,8 +11,13 @@ from rag.services import ServiceError
 
 
 def match(source, score=0.9):
-    return {"source": source, "chunk_id": source + "-1", "score": score,
-            "section": "名称", "text": "a" * 200}
+    return {
+        "source": source,
+        "chunk_id": source + "-1",
+        "score": score,
+        "section": "名称",
+        "text": "a" * 200,
+    }
 
 
 class EvaluationTests(unittest.TestCase):
@@ -23,16 +29,24 @@ class EvaluationTests(unittest.TestCase):
             {"id": "d", "query": "d", "expected_sources": []},
             {"id": "e", "query": "e", "expected_sources": []},
         ]
+
         def search(query, limit):
             self.assertEqual(limit, 5)
-            if query == "a": return [match("a(1)")]
-            if query == "b": return [match("a(1)"), match("b(1)")]
-            if query == "c": raise ServiceError("secret response")
-            if query == "d": return [match("a(1)", 0.2)]
+            if query == "a":
+                return [match("a(1)")]
+            if query == "b":
+                return [match("a(1)"), match("b(1)")]
+            if query == "c":
+                raise ServiceError("secret response")
+            if query == "d":
+                return [match("a(1)", 0.2)]
             return []
+
         report = evaluate({"cases": cases}, search)
         summary = report["summary"]
-        self.assertEqual((summary["positive"], summary["out_of_scope"], summary["failed"]), (3, 2, 1))
+        self.assertEqual(
+            (summary["positive"], summary["out_of_scope"], summary["failed"]), (3, 2, 1)
+        )
         self.assertEqual((summary["source_top1"], summary["source_hit_at_5"]), (1, 2))
         self.assertAlmostEqual(summary["source_mrr_at_5"], 0.5)
         self.assertEqual(report["cases"][1]["first_source_rank"], 2)
@@ -47,15 +61,26 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(len(checksum), 64)
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "bad.json"
-            path.write_text(json.dumps({"version":"v1", "cases":[
-                {"id":"same", "query":"a", "expected_sources":[]},
-                {"id":"same", "query":"b", "expected_sources":[]}]}))
-            with self.assertRaises(ValueError): load_dataset(path)
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": "v1",
+                        "cases": [
+                            {"id": "same", "query": "a", "expected_sources": []},
+                            {"id": "same", "query": "b", "expected_sources": []},
+                        ],
+                    }
+                )
+            )
+            with self.assertRaises(ValueError):
+                load_dataset(path)
 
     def test_existing_report_rejected_before_service(self):
-        with tempfile.NamedTemporaryFile() as output, \
-             patch("sys.argv", ["evaluate", "--output", output.name]), \
-             patch("tools.evaluate_rag.configured_services") as service:
+        with (
+            tempfile.NamedTemporaryFile() as output,
+            patch("sys.argv", ["evaluate", "--output", output.name]),
+            patch("tools.evaluate_rag.configured_services") as service,
+        ):
             self.assertEqual(main(), 1)
             service.assert_not_called()
 
