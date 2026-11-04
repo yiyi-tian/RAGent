@@ -2,5 +2,8 @@
   "host": "127.0.0.1",
   "port": 9000,
   "max_connections": 128,
-  "max_pending_bytes": 2097152
+  "max_pending_bytes": 2097152,
+  "worker_threads": 4,
+  "task_capacity": 256,
+  "result_capacity": 256
 }

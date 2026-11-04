@@ -4,3 +4,13 @@
 __pycache__/
 *.pyc
 *.docx
+
+# 本地环境配置可能包含密钥
+.env
+!.env.example
+
+# 知识库快照保存在本机，不提交到仓库。
+/artifacts/knowledge-base/
+
+# 本机生成的评测报告
+/artifacts/evaluation/
