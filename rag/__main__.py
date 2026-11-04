@@ -1,4 +1,5 @@
 """命令行入口：导入手册并执行独立检索。"""
+
 import argparse
 import json
 import sys
@@ -15,7 +16,7 @@ def import_manuals(names, embedding, store):
     if not chunks:
         raise ValueError("没有可导入的手册")
     for offset in range(0, len(chunks), 10):
-        batch = chunks[offset:offset + 10]
+        batch = chunks[offset : offset + 10]
         vectors = embedding.embed([chunk["text"] for chunk in batch])
         store.ensure_collection(len(vectors[0]), create=True)
         if offset == 0:
@@ -23,8 +24,13 @@ def import_manuals(names, embedding, store):
         store.upsert(batch, vectors)
     sources = {}
     for chunk in chunks:
-        sources.setdefault(chunk["source"], {key: chunk[key] for key in
-                           ("source", "language", "package", "package_version", "license_file")})
+        sources.setdefault(
+            chunk["source"],
+            {
+                key: chunk[key]
+                for key in ("source", "language", "package", "package_version", "license_file")
+            },
+        )
     return {"manuals": len(sources), "chunks": len(chunks), "sources": list(sources.values())}
 
 
@@ -39,7 +45,10 @@ def main():
     args = parser.parse_args()
     try:
         embedding, store = configured_services()
-        result = import_manuals(args.manuals, embedding, store) if args.command == "import" else search_linux_manual(args.query, embedding, store, args.limit)
+        if args.command == "import":
+            result = import_manuals(args.manuals, embedding, store)
+        else:
+            result = search_linux_manual(args.query, embedding, store, args.limit)
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
     except (ServiceError, ValueError, OSError) as error:
         print(f"RAG 失败：{error}", file=sys.stderr)

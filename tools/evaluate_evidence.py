@@ -1,4 +1,5 @@
 """对比证据块检索策略；所有 Qdrant 请求只读。"""
+
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -11,7 +12,9 @@ import sys
 from rag.services import ServiceError, configured_services
 
 COMMANDS = ("passwd", "man", "ls", "grep", "chmod", "ps", "gpasswd", "systemctl")
-COMMAND_PATTERN = re.compile(r"(?<![A-Za-z0-9_-])(" + "|".join(COMMANDS) + r")(?![A-Za-z0-9_-])", re.IGNORECASE)
+COMMAND_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_-])(" + "|".join(COMMANDS) + r")(?![A-Za-z0-9_-])", re.IGNORECASE
+)
 DEFAULT_SNAPSHOT = "artifacts/knowledge-base/linux-manual-v1-osejvh4r/linux_manual_v1.snapshot"
 
 
@@ -44,7 +47,11 @@ def load_cases(path, snapshot_path):
             raise ValueError("问题非法")
         if case.get("split") not in ("development", "validation"):
             raise ValueError("评测集分组非法")
-        if not isinstance(sources, list) or len(sources) > 1 or any(not isinstance(s, str) or not s for s in sources):
+        if (
+            not isinstance(sources, list)
+            or len(sources) > 1
+            or any(not isinstance(s, str) or not s for s in sources)
+        ):
             raise ValueError("来源标注非法")
         if not isinstance(evidence, list) or any(not isinstance(i, str) or not i for i in evidence):
             raise ValueError("证据标注非法")
@@ -76,7 +83,9 @@ def check_reference(dataset, store):
             if identity in labels and labels[identity] != source:
                 raise ValueError("同一证据 ID 标注了不同来源")
             labels[identity] = source
-    response = store._call("POST", "/points", {"ids": list(labels), "with_payload": True, "with_vector": False})
+    response = store._call(
+        "POST", "/points", {"ids": list(labels), "with_payload": True, "with_vector": False}
+    )
     if response is None or not isinstance(response.get("result"), list):
         raise ServiceError("证据块检查响应非法")
     found = {str(point["id"]): point["payload"]["source"] for point in response["result"]}
@@ -85,8 +94,12 @@ def check_reference(dataset, store):
 
 
 def filtered_search(store, vector, source, limit=5):
-    request = {"query": vector, "limit": limit, "with_payload": True,
-               "filter": {"must": [{"key": "source", "match": {"value": source}}]}}
+    request = {
+        "query": vector,
+        "limit": limit,
+        "with_payload": True,
+        "filter": {"must": [{"key": "source", "match": {"value": source}}]},
+    }
     response = store._call("POST", "/points/query", request)
     try:
         if response is None:
@@ -97,7 +110,9 @@ def filtered_search(store, vector, source, limit=5):
         matches = []
         for point in points:
             payload, score = point["payload"], point["score"]
-            if not isinstance(payload, dict) or any(not isinstance(payload.get(k), str) for k in ("source", "chunk_id", "text")):
+            if not isinstance(payload, dict) or any(
+                not isinstance(payload.get(k), str) for k in ("source", "chunk_id", "text")
+            ):
                 raise ValueError
             if type(score) not in (int, float) or not math.isfinite(score):
                 raise ValueError
@@ -108,8 +123,16 @@ def filtered_search(store, vector, source, limit=5):
 
 
 def compact_results(matches):
-    return [{"source": p["source"], "chunk_id": p["chunk_id"], "score": p["score"],
-             "section": p.get("section", ""), "excerpt": p["text"][:160]} for p in matches]
+    return [
+        {
+            "source": p["source"],
+            "chunk_id": p["chunk_id"],
+            "score": p["score"],
+            "section": p.get("section", ""),
+            "excerpt": p["text"][:160],
+        }
+        for p in matches
+    ]
 
 
 def rank_for(rows, key, targets):
@@ -120,10 +143,14 @@ def summarize(rows, strategy):
     supported = [r for r in rows if r["evidence_status"] == "supported"]
     insufficient = [r for r in rows if r["evidence_status"] == "insufficient"]
     sources = [r for r in rows if r["expected_sources"]]
+
     def hits(items, key, rank):
         return sum(r[strategy][key] is not None and r[strategy][key] <= rank for r in items)
+
     return {
-        "total": len(rows), "supported": len(supported), "insufficient": len(insufficient),
+        "total": len(rows),
+        "supported": len(supported),
+        "insufficient": len(insufficient),
         "fragmented": sum(r["evidence_status"] == "fragmented" for r in rows),
         "errors": sum(r[strategy]["error"] is not None for r in rows),
         "evidence_top1": hits(supported, "evidence_rank", 1),
@@ -132,15 +159,28 @@ def summarize(rows, strategy):
         "source_hit_at_5": hits(sources, "source_rank", 5),
         "insufficient_with_results": sum(bool(r[strategy]["results"]) for r in insufficient),
         "insufficient_errors": sum(r[strategy]["error"] is not None for r in insufficient),
-        "filter_applied": sum(r["filter_source"] is not None and r["baseline"]["error"] is None
-                              for r in rows) if strategy == "filtered" else 0,
+        "filter_applied": (
+            sum(r["filter_source"] is not None and r["baseline"]["error"] is None for r in rows)
+            if strategy == "filtered"
+            else 0
+        ),
     }
 
 
 def evaluate(dataset, embedding, store):
     rows = []
     for case in dataset["cases"]:
-        row = {key: case[key] for key in ("id", "query", "split", "expected_sources", "evidence_ids", "evidence_status")}
+        row = {
+            key: case[key]
+            for key in (
+                "id",
+                "query",
+                "split",
+                "expected_sources",
+                "evidence_ids",
+                "evidence_status",
+            )
+        }
         row["filter_source"] = command_source(case["query"])
         vector = None
         try:
@@ -186,10 +226,17 @@ def main():
         store.ensure_collection(1024)
         check_reference(dataset, store)
         report = evaluate(dataset, embedding, store)
-        report.update({"dataset_version": dataset["version"], "dataset_sha256": digest,
-                       "snapshot_sha256": dataset["snapshot_sha256"], "model": embedding.model,
-                       "collection": store.url.rsplit("/", 1)[-1],
-                       "created_at_utc": datetime.now(timezone.utc).isoformat(), "limit": 5})
+        report.update(
+            {
+                "dataset_version": dataset["version"],
+                "dataset_sha256": digest,
+                "snapshot_sha256": dataset["snapshot_sha256"],
+                "model": embedding.model,
+                "collection": store.url.rsplit("/", 1)[-1],
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                "limit": 5,
+            }
+        )
         output = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
         if args.output:
             with open(args.output, "x", encoding="utf-8") as file:
@@ -197,7 +244,11 @@ def main():
             print(json.dumps(report["summary"], ensure_ascii=False))
         else:
             print(output, end="")
-        return 1 if any(report["summary"][split][name]["errors"] for split in report["summary"] for name in ("baseline", "filtered")) else 0
+        for summary in report["summary"].values():
+            for strategy in ("baseline", "filtered"):
+                if summary[strategy]["errors"]:
+                    return 1
+        return 0
     except (ServiceError, ValueError, OSError, KeyError, TypeError) as error:
         print(f"评测失败：{type(error).__name__}", file=sys.stderr)
         return 1

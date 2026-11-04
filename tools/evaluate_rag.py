@@ -1,4 +1,5 @@
 """来源级检索评测。"""
+
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -27,7 +28,11 @@ def load_dataset(path):
             raise ValueError("评测问题 ID 必须唯一且非空")
         if not isinstance(query, str) or not query.strip() or len(query) > 4096:
             raise ValueError("评测问题必须为非空字符串且不超过 4096 字符")
-        if not isinstance(expected, list) or len(expected) > 1 or any(not isinstance(x, str) or not x for x in expected):
+        if (
+            not isinstance(expected, list)
+            or len(expected) > 1
+            or any(not isinstance(x, str) or not x for x in expected)
+        ):
             raise ValueError("每个问题应标注一个来源，或为空表示无对应资料")
         ids.add(identity)
     return dataset, hashlib.sha256(raw).hexdigest()
@@ -49,16 +54,27 @@ def evaluate(dataset, search):
         row = {"id": case["id"], "query": case["query"], "expected_sources": expected}
         try:
             matches = search(case["query"], 5)
-            row["results"] = [{"source": m["source"], "chunk_id": m["chunk_id"], "score": m["score"],
-                               "section": m.get("section", ""), "excerpt": m["text"][:160]}
-                              for m in matches]
+            row["results"] = [
+                {
+                    "source": m["source"],
+                    "chunk_id": m["chunk_id"],
+                    "score": m["score"],
+                    "section": m.get("section", ""),
+                    "excerpt": m["text"][:160],
+                }
+                for m in matches
+            ]
             row["error"] = None
         except (ServiceError, ValueError, OSError) as error:
             # 不透传外部异常文本，避免将服务内容或凭据写入评测报告。
             row["results"] = []
             row["error"] = type(error).__name__
             failures += 1
-        ranks = [index for index, item in enumerate(row["results"], start=1) if item["source"] in expected]
+        ranks = [
+            index
+            for index, item in enumerate(row["results"], start=1)
+            if item["source"] in expected
+        ]
         rank = ranks[0] if ranks else None
         row["first_source_rank"] = rank
         if expected and rank is not None:
@@ -66,11 +82,17 @@ def evaluate(dataset, search):
             hit_five += 1
             reciprocal_sum += 1.0 / rank
         results.append(row)
-    summary = {"total": len(results), "positive": positive_count, "out_of_scope": negatives,
-               "failed": failures, "source_top1": top_one, "source_hit_at_5": hit_five,
-               "source_top1_rate": top_one / positive_count if positive_count else None,
-               "source_hit_at_5_rate": hit_five / positive_count if positive_count else None,
-               "source_mrr_at_5": reciprocal_sum / positive_count if positive_count else None}
+    summary = {
+        "total": len(results),
+        "positive": positive_count,
+        "out_of_scope": negatives,
+        "failed": failures,
+        "source_top1": top_one,
+        "source_hit_at_5": hit_five,
+        "source_top1_rate": top_one / positive_count if positive_count else None,
+        "source_hit_at_5_rate": hit_five / positive_count if positive_count else None,
+        "source_mrr_at_5": reciprocal_sum / positive_count if positive_count else None,
+    }
     return {"summary": summary, "cases": results}
 
 
@@ -84,10 +106,19 @@ def main():
         if args.output and Path(args.output).exists():
             raise FileExistsError("报告文件已存在")
         embedding, store = configured_services()
-        report = evaluate(dataset, lambda query, limit: search_linux_manual(query, embedding, store, limit))
-        report.update({"dataset_version": dataset["version"], "dataset_sha256": digest,
-                       "model": embedding.model, "collection": store.url.rsplit("/", 1)[-1],
-                       "created_at_utc": datetime.now(timezone.utc).isoformat(), "limit": 5})
+        report = evaluate(
+            dataset, lambda query, limit: search_linux_manual(query, embedding, store, limit)
+        )
+        report.update(
+            {
+                "dataset_version": dataset["version"],
+                "dataset_sha256": digest,
+                "model": embedding.model,
+                "collection": store.url.rsplit("/", 1)[-1],
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                "limit": 5,
+            }
+        )
         text = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
         if args.output:
             with open(args.output, "x", encoding="utf-8") as output:

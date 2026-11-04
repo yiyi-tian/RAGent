@@ -1,16 +1,21 @@
-# 网络验证说明
+# 验证说明
 
 ## 构建与运行
 
-在Ubuntu环境安装C17工具链、CMake、pkg-config、json-c开发包和Python 3后，在项目根目录运行：
+完整依赖安装与构建步骤见 [README](../README.md)。在仓库根目录使用同一 Python 环境：
 
-~~~bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build -j 2
 ctest --test-dir build --output-on-failure
-~~~
+.venv/bin/pyright --pythonpath .venv/bin/python
+.venv/bin/black --check python rag tools tests
+```
 
-测试使用Python 3标准库，无需Python第三方依赖。CTest运行网络集成测试和并发测试，后者使用带可控延时的测试专用服务器。测试服务器绑定127.0.0.1的系统分配端口，不占用固定9000端口。
+CTest 包含线程池背压、部署脚本、RAG、并发、网络和 Agent 六项。Agent 测试依赖已安装的项目及
+Python 运行依赖；依赖不齐时 CMake 会提示未启用，不能将其当作完整验收。
+网络测试仅需 Python 标准库，服务与集成测试使用动态端口。Agent 测试串行运行，
+覆盖子进程启动与清理，允许较慢环境中的首次导入。
 
 也可以直接运行以显示每个用例：
 
@@ -35,15 +40,33 @@ python3 tests/integration/network_test.py ./build/agent-server ./build/agent
 
 大响应超过服务器每轮64 KiB写入预算，用于验证重复EPOLLOUT和发送偏移；慢客户端测试额外耗尽内核发送缓冲，验证用户态待发送数据上限。这些测试不代表端到端性能基准。
 
-## 当前限制
+## Agent、模型与检索覆盖
 
-当前没有外部服务，因此尚未测试LLM/RAG故障、命令执行或沙箱隔离。并发测试覆盖慢任务、SERVER_BUSY、PING、乱序响应、断连结果丢弃和任务执行期间停止；工作线程池测试覆盖完成队列背压恢复及等待中的停止。当前服务器最多接入128个连接，尚未达到后续1000个端到端请求压测目标。交互客户端尚未实现历史记录、Tab补全和来源展示；当前所有成功响应均为空sources。
+- 四种模式、独立上下文、多轮工具调用、并行、模式授权、参数类型和部分失败。
+- 重复调用 ID、单轮工具数与模型调用轮数限制、请求总超时。
+- C HTTP 连接失败、超时、非法 JSON、字段缺失、错误码映射和响应大小边界。
+- DeepSeek 适配器的受控 HTTP 往返、工具 ID 回填、认证、限流、超时、空回答及输出截断。
+- RAG 来源投影、空结果、检索失败，以及 Embedding/Qdrant 的集合一致性和依赖故障。
+- 客户端检索来源展示与非法来源响应拒绝。
+
+## 验收结果与限制
+
+网络、Agent 与 RAG 的 Debug 构建及回归检查通过；部署脚本隔离测试通过。
+Pyright、Black、依赖一致性检查通过。
+Python 可编辑安装、仓库外模块及命令入口、wheel 构建与安装均已验证。
+受控 HTTP 测试不调用云端服务，不代表真实模型表现或语义检索质量。
+
+真实服务验收通过 C 客户端覆盖 DeepSeek CHAT、真实手册 RAG、AGENT 自主检索和
+CMD 模拟诊断。来源与证据质量见[来源级评测](rag-evaluation-v1.md)及
+[证据块评测](rag-evidence-v1.md)。
+
+当前没有真实命令执行或沙箱隔离，未进行 1000 个端到端在途请求压测。客户端没有跨请求
+历史与 Tab 补全。Docker 已启用开机启动，Qdrant 可用；该启动配置的再次宿主机重启
+验收尚未完成。
 
 ## 固定响应网络基准
 
 构建后执行 `python3 tests/benchmark/network_benchmark.py build/agent-server --clients 16 --requests 100`。脚本输出请求数、错误数、吞吐、延迟分位数和服务器CPU使用率；需要Linux `/proc`。比较版本时使用相同构建类型、参数和空闲环境，并记录机器配置。该结果只反映固定响应，不代表模型或RAG性能。
-
-一次探索性对比（Linux 6.8.0-136-generic、x86_64、可见4个CPU、Debug构建，16客户端各100次请求）中，阶段一基线为273.7次/秒、p95 133.60 ms、服务器CPU 16.2%；当前版本为355.6次/秒、p95 104.59 ms、服务器CPU 36.2%，均无请求错误。测试期间还有其他构建任务，且只有单次样本，不能据此判断性能提升；应在空闲环境重复测量。
 
 ## ThreadSanitizer 并发检查
 
@@ -61,3 +84,9 @@ find "$report_dir" -type f -print
 ~~~
 
 本机的地址随机化配置会使ThreadSanitizer启动时报 `unexpected memory mapping`；`setarch -R` 仅关闭测试进程及其子进程的地址随机化，不修改系统设置。若环境不允许使用该选项，需要在允许的测试环境中运行。测试通过且报告目录为空才表示这些测试路径未发现数据竞争。
+
+## 部署脚本验证
+
+`deployment-unit` 使用临时目录、模拟 Docker/包管理命令和本地受控服务，验证
+`scripts/start.sh` 的创建流程、启动清理、空库和端口占用处理，不安装软件、不访问云端。
+这不代替另一台机器上 Docker 拉取、手册实际入库和真实模型调用的部署验收。

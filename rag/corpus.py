@@ -1,4 +1,5 @@
 """读取发行版安装的手册，生成带来源的稳定分块。"""
+
 import hashlib
 import os
 from pathlib import Path
@@ -13,8 +14,9 @@ NAMESPACE = uuid.UUID("41e596b2-0699-45b6-b4eb-8b3284b18b72")
 
 def _run(command, **kwargs):
     try:
-        return subprocess.run(command, check=True, capture_output=True, text=True,
-                              timeout=15, **kwargs).stdout
+        return subprocess.run(
+            command, check=True, capture_output=True, text=True, timeout=15, **kwargs
+        ).stdout
     except (OSError, subprocess.SubprocessError) as error:
         raise ValueError(f"无法处理手册：{command[0]}") from error
 
@@ -67,7 +69,7 @@ def split_sections(text, limit=1000):
         sections.append((heading, "\n".join(lines).strip()))
     for heading, section in sections:
         for offset in range(0, len(section), limit):
-            chunk = section[offset:offset + limit].strip()
+            chunk = section[offset : offset + limit].strip()
             if chunk:
                 yield heading, chunk
 
@@ -79,17 +81,19 @@ def prepare_manual(name, root=MAN_ROOT):
     for index, (heading, text) in enumerate(split_sections(render_manual(path))):
         identity = f"{name}:1:{language}:{package}:{version}:{index}:{text}"
         chunk_id = str(uuid.uuid5(NAMESPACE, identity))
-        chunks.append({
-            "chunk_id": chunk_id,
-            "source": f"{name}(1)",
-            "section": heading,
-            "language": language,
-            "package": package,
-            "package_version": version,
-            "license_file": license_path,
-            "text": text,
-            "content_sha256": hashlib.sha256(text.encode()).hexdigest(),
-        })
+        chunks.append(
+            {
+                "chunk_id": chunk_id,
+                "source": f"{name}(1)",
+                "section": heading,
+                "language": language,
+                "package": package,
+                "package_version": version,
+                "license_file": license_path,
+                "text": text,
+                "content_sha256": hashlib.sha256(text.encode()).hexdigest(),
+            }
+        )
     if not chunks:
         raise ValueError(f"手册没有可导入文本：{name}(1)")
     return chunks

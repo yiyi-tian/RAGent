@@ -1,4 +1,5 @@
 """证据指标与实验过滤的行为测试。"""
+
 import json
 from pathlib import Path
 import tempfile
@@ -10,7 +11,13 @@ from tools.evaluate_evidence import command_source, evaluate, filtered_search, l
 
 
 def result(source, chunk_id, score=0.7):
-    return {"source": source, "chunk_id": chunk_id, "score": score, "text": "示例文本", "section": "描述"}
+    return {
+        "source": source,
+        "chunk_id": chunk_id,
+        "score": score,
+        "text": "示例文本",
+        "section": "描述",
+    }
 
 
 class FakeEmbedding:
@@ -51,14 +58,38 @@ class EvidenceTests(unittest.TestCase):
 
     def test_comparison_embeds_once_fallback_and_failures(self):
         cases = [
-            {"id":"a", "query":"ls 查看文件", "split":"development", "expected_sources":["ls(1)"],
-             "evidence_ids":["ls-evidence"], "evidence_status":"supported"},
-            {"id":"b", "query":"如何查看文件", "split":"development", "expected_sources":["ls(1)"],
-             "evidence_ids":["ls-evidence"], "evidence_status":"supported"},
-            {"id":"c", "query":"ps与ls比较", "split":"development", "expected_sources":[],
-             "evidence_ids":[], "evidence_status":"insufficient"},
-            {"id":"d", "query":"ls失败", "split":"validation", "expected_sources":["ls(1)"],
-             "evidence_ids":["ls-evidence"], "evidence_status":"supported"},
+            {
+                "id": "a",
+                "query": "ls 查看文件",
+                "split": "development",
+                "expected_sources": ["ls(1)"],
+                "evidence_ids": ["ls-evidence"],
+                "evidence_status": "supported",
+            },
+            {
+                "id": "b",
+                "query": "如何查看文件",
+                "split": "development",
+                "expected_sources": ["ls(1)"],
+                "evidence_ids": ["ls-evidence"],
+                "evidence_status": "supported",
+            },
+            {
+                "id": "c",
+                "query": "ps与ls比较",
+                "split": "development",
+                "expected_sources": [],
+                "evidence_ids": [],
+                "evidence_status": "insufficient",
+            },
+            {
+                "id": "d",
+                "query": "ls失败",
+                "split": "validation",
+                "expected_sources": ["ls(1)"],
+                "evidence_ids": ["ls-evidence"],
+                "evidence_status": "supported",
+            },
         ]
         embedding, store = FakeEmbedding(), FakeStore()
         report = evaluate({"cases": cases}, embedding, store)
@@ -66,7 +97,9 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(store.filtered_sources, ["ls(1)"])
         self.assertEqual(report["cases"][0]["baseline"]["evidence_rank"], 2)
         self.assertEqual(report["cases"][0]["filtered"]["evidence_rank"], 1)
-        self.assertEqual(report["cases"][1]["baseline"]["results"], report["cases"][1]["filtered"]["results"])
+        self.assertEqual(
+            report["cases"][1]["baseline"]["results"], report["cases"][1]["filtered"]["results"]
+        )
         self.assertEqual(report["summary"]["development"]["baseline"]["evidence_hit_at_5"], 2)
         self.assertEqual(report["summary"]["development"]["filtered"]["evidence_top1"], 1)
         self.assertEqual(report["summary"]["validation"]["baseline"]["errors"], 1)
@@ -74,8 +107,14 @@ class EvidenceTests(unittest.TestCase):
         self.assertNotIn("敏感细节", json.dumps(report, ensure_ascii=False))
 
     def test_filtered_failure_preserves_baseline(self):
-        case = {"id":"a", "query":"ls 文件", "split":"development", "expected_sources":["ls(1)"],
-                "evidence_ids":["ls-evidence"], "evidence_status":"supported"}
+        case = {
+            "id": "a",
+            "query": "ls 文件",
+            "split": "development",
+            "expected_sources": ["ls(1)"],
+            "evidence_ids": ["ls-evidence"],
+            "evidence_status": "supported",
+        }
         store = FakeStore()
         with patch.object(store, "_call", side_effect=ServiceError("private response")):
             report = evaluate({"cases": [case]}, FakeEmbedding(), store)
@@ -89,7 +128,9 @@ class EvidenceTests(unittest.TestCase):
         with patch.object(store, "_call", return_value=None):
             with self.assertRaises(ServiceError):
                 filtered_search(store, [1.0], "ls(1)")
-        with patch.object(store, "_call", return_value={"result":{"points":[{"payload":{},"score":0.5}]}}):
+        with patch.object(
+            store, "_call", return_value={"result": {"points": [{"payload": {}, "score": 0.5}]}}
+        ):
             with self.assertRaises(ServiceError):
                 filtered_search(store, [1.0], "ls(1)")
 
@@ -98,14 +139,18 @@ class EvidenceTests(unittest.TestCase):
             snapshot = Path(directory) / "snapshot"
             dataset = Path(directory) / "dataset.json"
             snapshot.write_bytes(b"test")
-            dataset.write_text(json.dumps({"version":"v1", "snapshot_sha256":"different", "cases":[]}))
+            dataset.write_text(
+                json.dumps({"version": "v1", "snapshot_sha256": "different", "cases": []})
+            )
             with self.assertRaisesRegex(ValueError, "快照不匹配"):
                 load_cases(dataset, snapshot)
 
     def test_existing_report_rejected_before_service(self):
-        with tempfile.NamedTemporaryFile() as output, \
-             patch("sys.argv", ["evaluate", "--output", output.name]), \
-             patch("tools.evaluate_evidence.configured_services") as service:
+        with (
+            tempfile.NamedTemporaryFile() as output,
+            patch("sys.argv", ["evaluate", "--output", output.name]),
+            patch("tools.evaluate_evidence.configured_services") as service,
+        ):
             self.assertEqual(main(), 1)
             service.assert_not_called()
 

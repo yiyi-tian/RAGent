@@ -9,8 +9,11 @@ __pycache__/
 .env
 !.env.example
 
-# 知识库快照保存在本机，不提交到仓库。
-/artifacts/knowledge-base/
+# 本地生成的数据、快照和评测产物
+/artifacts/
 
-# 本机生成的评测报告
-/artifacts/evaluation/
+.venv/
+
+# Python 安装与打包产物
+*.egg-info/
+/dist/

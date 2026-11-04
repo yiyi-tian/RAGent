@@ -1,4 +1,5 @@
 """固定响应网络基准；用相同参数比较版本，不代表模型端到端性能。"""
+
 import argparse
 import concurrent.futures
 import json
@@ -55,7 +56,9 @@ def main():
     if args.clients < 1 or args.requests < 1:
         parser.error("clients和requests必须大于0")
     with tempfile.TemporaryFile() as log:
-        server = subprocess.Popen([args.server, "--port", "0"], stdout=subprocess.PIPE, stderr=log, text=True)
+        server = subprocess.Popen(
+            [args.server, "--port", "0"], stdout=subprocess.PIPE, stderr=log, text=True
+        )
         try:
             line = server.stdout.readline()
             if not line.startswith("Listening on "):
@@ -64,15 +67,19 @@ def main():
             ticks_before = cpu_ticks(server.pid)
             start = time.monotonic()
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.clients) as executor:
-                results = list(executor.map(lambda _: worker(port, args.requests), range(args.clients)))
+                results = list(
+                    executor.map(lambda _: worker(port, args.requests), range(args.clients))
+                )
             elapsed = time.monotonic() - start
             ticks = cpu_ticks(server.pid) - ticks_before
             latencies = sorted(value for values, _ in results for value in values)
             percentile = lambda p: latencies[min(len(latencies) - 1, int((len(latencies) - 1) * p))]
-            print(f"clients={args.clients} requests={len(latencies)} errors={sum(e for _, e in results)} "
-                  f"throughput={len(latencies) / elapsed:.1f}/s p50={percentile(.5):.2f}ms "
-                  f"p95={percentile(.95):.2f}ms p99={percentile(.99):.2f}ms "
-                  f"server_cpu={100 * ticks / os.sysconf('SC_CLK_TCK') / elapsed:.1f}%")
+            print(
+                f"clients={args.clients} requests={len(latencies)} errors={sum(e for _, e in results)} "
+                f"throughput={len(latencies) / elapsed:.1f}/s p50={percentile(.5):.2f}ms "
+                f"p95={percentile(.95):.2f}ms p99={percentile(.99):.2f}ms "
+                f"server_cpu={100 * ticks / os.sysconf('SC_CLK_TCK') / elapsed:.1f}%"
+            )
         finally:
             server.terminate()
             server.wait(timeout=10)

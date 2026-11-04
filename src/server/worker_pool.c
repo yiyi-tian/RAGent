@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "server/worker_pool.h"
+#include "server/agent_http.h"
 
 #include <errno.h>
 #include <pthread.h>
@@ -40,7 +41,9 @@ static void notify_network(WorkerPool *pool)
         result = write(pool->event_fd, &one, sizeof(one));
     } while (result < 0 && errno == EINTR);
     /* 计数器饱和时本身已处于可读状态。 */
-    if (result < 0 && errno != EAGAIN) fprintf(stderr, "eventfd通知失败: %d\n", errno);
+    if (result < 0 && errno != EAGAIN) {
+        fprintf(stderr, "eventfd通知失败: %d\n", errno);
+    }
 }
 
 static void *worker_main(void *argument)
@@ -48,8 +51,9 @@ static void *worker_main(void *argument)
     WorkerPool *pool = argument;
     for (;;) {
         pthread_mutex_lock(&pool->mutex);
-        while (!pool->stopping && pool->task_count == 0)
+        while (!pool->stopping && pool->task_count == 0) {
             pthread_cond_wait(&pool->tasks_ready, &pool->mutex);
+        }
         if (pool->stopping) {
             pthread_mutex_unlock(&pool->mutex);
             break;
@@ -61,21 +65,26 @@ static void *worker_main(void *argument)
 
 #ifdef RAGENT_TESTING
         const char *delay_text = getenv("RAGENT_TEST_DELAY_MS");
-        if (delay_text != NULL && (getenv("RAGENT_TEST_DELAY_FIRST_ONLY") == NULL || item.frame.request_id == 1)) {
+        if (delay_text != NULL &&
+            (getenv("RAGENT_TEST_DELAY_FIRST_ONLY") == NULL || item.frame.request_id == 1)) {
             unsigned delay = (unsigned)strtoul(delay_text, NULL, 10);
-            fprintf(stderr, "[TEST] stage=task_start req=%llu\n", (unsigned long long)item.frame.request_id);
+            fprintf(stderr,
+                    "[TEST] stage=task_start req=%llu\n",
+                    (unsigned long long)item.frame.request_id);
             struct timespec pause = {
                 .tv_sec = delay / 1000,
                 .tv_nsec = (long)(delay % 1000) * 1000000L,
             };
-            while (nanosleep(&pause, &pause) != 0 && errno == EINTR) {}
+            while (nanosleep(&pause, &pause) != 0 && errno == EINTR) {
+            }
         }
 #endif
         Frame response = {0};
-        int status = handle_fixed_request(&item.frame, &response);
+        int status = agent_http_request(&item.frame, &response);
         uint64_t request_id = item.frame.request_id;
         frame_destroy(&item.frame);
-        if (status != 0 && frame_make_error(request_id, "INTERNAL_ERROR", "处理请求失败", &response) != 0) {
+        if (status != 0 &&
+            frame_make_error(request_id, "INTERNAL_ERROR", "处理请求失败", &response) != 0) {
             response.request_id = request_id;
         }
         item.frame = response;
@@ -107,20 +116,32 @@ static void *worker_main(void *argument)
 WorkerPool *worker_pool_create(unsigned threads, unsigned task_capacity, unsigned result_capacity)
 {
     WorkerPool *pool = calloc(1, sizeof(*pool));
-    if (!pool) return NULL;
+    if (!pool) {
+        return NULL;
+    }
     pool->event_fd = -1;
-    if (pthread_mutex_init(&pool->mutex, NULL) != 0) goto fail_pool;
-    if (pthread_cond_init(&pool->tasks_ready, NULL) != 0) goto fail_mutex;
-    if (pthread_cond_init(&pool->result_space, NULL) != 0) goto fail_tasks_cond;
+    if (pthread_mutex_init(&pool->mutex, NULL) != 0) {
+        goto fail_pool;
+    }
+    if (pthread_cond_init(&pool->tasks_ready, NULL) != 0) {
+        goto fail_mutex;
+    }
+    if (pthread_cond_init(&pool->result_space, NULL) != 0) {
+        goto fail_tasks_cond;
+    }
     pool->threads = calloc(threads, sizeof(*pool->threads));
     pool->tasks = calloc(task_capacity, sizeof(*pool->tasks));
     pool->results = calloc(result_capacity, sizeof(*pool->results));
     pool->task_capacity = task_capacity;
     pool->result_capacity = result_capacity;
     pool->event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (!pool->threads || !pool->tasks || !pool->results || pool->event_fd < 0) goto fail_ready;
+    if (!pool->threads || !pool->tasks || !pool->results || pool->event_fd < 0) {
+        goto fail_ready;
+    }
     for (; pool->started < threads; ++pool->started) {
-        if (pthread_create(&pool->threads[pool->started], NULL, worker_main, pool) != 0) goto fail_ready;
+        if (pthread_create(&pool->threads[pool->started], NULL, worker_main, pool) != 0) {
+            goto fail_ready;
+        }
     }
     return pool;
 fail_ready:
@@ -135,7 +156,10 @@ fail_pool:
     return NULL;
 }
 
-int worker_pool_event_fd(const WorkerPool *pool) { return pool->event_fd; }
+int worker_pool_event_fd(const WorkerPool *pool)
+{
+    return pool->event_fd;
+}
 
 bool worker_pool_submit(WorkerPool *pool, WorkItem *item)
 {
@@ -178,18 +202,26 @@ bool worker_pool_has_results(WorkerPool *pool)
 
 void worker_pool_destroy(WorkerPool *pool)
 {
-    if (!pool) return;
+    if (!pool) {
+        return;
+    }
     pthread_mutex_lock(&pool->mutex);
     pool->stopping = true;
     pthread_cond_broadcast(&pool->tasks_ready);
     pthread_cond_broadcast(&pool->result_space);
     pthread_mutex_unlock(&pool->mutex);
-    for (unsigned i = 0; i < pool->started; ++i) pthread_join(pool->threads[i], NULL);
-    for (size_t i = 0; i < pool->task_count; ++i)
+    for (unsigned i = 0; i < pool->started; ++i) {
+        pthread_join(pool->threads[i], NULL);
+    }
+    for (size_t i = 0; i < pool->task_count; ++i) {
         frame_destroy(&pool->tasks[(pool->task_head + i) % pool->task_capacity].frame);
-    for (size_t i = 0; i < pool->result_count; ++i)
+    }
+    for (size_t i = 0; i < pool->result_count; ++i) {
         frame_destroy(&pool->results[(pool->result_head + i) % pool->result_capacity].frame);
-    if (pool->event_fd >= 0) close(pool->event_fd);
+    }
+    if (pool->event_fd >= 0) {
+        close(pool->event_fd);
+    }
     free(pool->threads);
     free(pool->tasks);
     free(pool->results);
