@@ -2,7 +2,7 @@
 
 RAGent 是一个面向 Linux 系统编程课程的多客户端 Agent。客户端、网络服务和受控执行边界使用 C17；Python Agent 使用 LangChain 编排模型和工具。客户端通过自定义 TCP 协议接入，C 网络服务计划通过内部 HTTP/JSON 调用 Python Agent。Linux 手册知识库的离线解析与入库工具计划使用 Python。
 
-> 当前状态：C17 网络服务已接入单 epoll 线程、固定线程池、有界队列和 eventfd。CHAT、RAG、CMD 和默认 AGENT 请求仍返回固定响应；尚未接入 Python Agent、模型、知识库或命令执行沙箱。
+> 当前状态：C17 网络服务已接入单 epoll 线程、固定线程池、有界队列和 eventfd。CHAT、RAG、CMD 和默认 AGENT 请求仍返回固定响应；尚未接入 Python Agent、真实模型或命令执行沙箱。Linux 手册入库和检索原型已使用百炼及本机官方 Qdrant 导入首批 8 本手册，并完成小样本真实检索验证。
 
 ## 目标架构
 
@@ -74,9 +74,13 @@ sudo apt install build-essential cmake pkg-config libjson-c-dev python3
 
 ## 命令工具安全路线
 
-只读操作可在白名单内自动执行。其他白名单操作也可自动执行，但写操作只作用于专用沙箱工作区；宿主机系统级变更逐次确认，并只能通过固定、参数校验过的操作。任意 Shell 字符串不作为工具参数，也不使用 system() 或 /bin/sh -c。
+只读操作按权限策略执行；自动写操作只作用于专用沙箱工作区，宿主机系统级变更逐次确认。命令接口、执行方式和权限策略尚待小组确定，模型生成命令的执行能力目前尚未实现。
 
 后续沙箱按阶段实现：非特权身份、专用工作区挂载、只读根文件系统、资源和输出限制，再加入 seccomp 与 cgroups。工作区写操作可使用 rootless 容器；不得把 Docker 管理套接字暴露给 Agent。当前阶段没有命令执行或沙箱代码。
+
+## 工具目录
+
+根目录 `tools/` 存放由开发或运维人员主动运行的工具，如 RAG 检索评测；它们不会自动注册为 Agent 可调用的业务工具。Agent 业务工具将在后续阶段实现。
 
 ## 文档
 
@@ -84,6 +88,9 @@ sudo apt install build-essential cmake pkg-config libjson-c-dev python3
 - [模块接口草案](docs/module-interfaces.md)：C 模块职责、所有权和后端 HTTP 边界。
 - [开发计划](docs/development-plan.md)：阶段目标、验收条件和安全路线。
 - [网络验证说明](docs/testing.md)：当前自动化测试覆盖范围。
+- [Linux 手册知识库](docs/rag.md)：手册入库、检索配置和当前验收限制。
+- [检索评测 v1](docs/rag-evaluation-v1.md)：来源级基线和人工复核结果。
+- [证据块对比 v1](docs/rag-evidence-v1.md)：证据标注和实验性过滤结果。
 - [开发约定](AGENTS.md)：代码风格、中文注释和交付规则。
 
 ## 协作

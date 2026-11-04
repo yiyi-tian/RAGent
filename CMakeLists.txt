@@ -39,6 +39,9 @@ if(BUILD_TESTING)
     target_compile_options(worker-pool-test PRIVATE -Wall -Wextra -Wpedantic)
     add_test(NAME worker-pool-backpressure COMMAND worker-pool-test)
     set_tests_properties(worker-pool-backpressure PROPERTIES TIMEOUT 10)
+    add_test(NAME rag-unit
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests/rag -v)
+    set_tests_properties(rag-unit PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 30)
     add_test(NAME concurrency-integration
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/concurrency_test.py
                 $<TARGET_FILE:agent-server-test> $<TARGET_FILE:agent>)
