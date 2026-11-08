@@ -30,6 +30,12 @@ endforeach()
 include(CTest)
 if(BUILD_TESTING)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_executable(socket-probe tools/socket_probe.c)
+    target_link_libraries(socket-probe PRIVATE Threads::Threads PkgConfig::JSONC)
+    target_compile_options(socket-probe PRIVATE -Wall -Wextra -Wpedantic)
+    add_test(NAME native-probe-unit COMMAND ${Python3_EXECUTABLE}
+        ${PROJECT_SOURCE_DIR}/tests/benchmark/native_probe_test.py $<TARGET_FILE:socket-probe>)
+    set_tests_properties(native-probe-unit PROPERTIES TIMEOUT 45)
     add_executable(agent-server-test src/server/main.c src/server/worker_pool.c src/server/agent_http.c)
     target_compile_definitions(agent-server-test PRIVATE RAGENT_TESTING)
     target_link_libraries(agent-server-test PRIVATE agent-common Threads::Threads PkgConfig::CURL)
@@ -37,7 +43,8 @@ if(BUILD_TESTING)
     add_executable(worker-pool-test tests/worker_pool_test.c src/server/worker_pool.c src/server/agent_http.c)
     target_compile_definitions(worker-pool-test PRIVATE RAGENT_TESTING)
     target_link_libraries(worker-pool-test PRIVATE agent-common Threads::Threads PkgConfig::CURL)
-    target_compile_options(worker-pool-test PRIVATE -Wall -Wextra -Wpedantic)
+    # Release 构建中测试仍需执行 assert，不能让 NDEBUG 移除检查和测试调用。
+    target_compile_options(worker-pool-test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
     add_test(NAME worker-pool-backpressure COMMAND worker-pool-test)
     set_tests_properties(worker-pool-backpressure PROPERTIES TIMEOUT 10)
     add_test(NAME deployment-unit
@@ -58,9 +65,15 @@ if(BUILD_TESTING)
 endif()
 
 if(BUILD_TESTING)
-    execute_process(COMMAND ${Python3_EXECUTABLE} -c "import ragent, rag, tools, aiohttp, langchain_core, langchain_openai"
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} -c
+            "import ragent, rag, tools, aiohttp, uvloop, langchain_core, langchain_openai"
         RESULT_VARIABLE AGENT_DEPS_STATUS OUTPUT_QUIET ERROR_QUIET)
     if(AGENT_DEPS_STATUS EQUAL 0)
+        add_test(NAME agent-workers-integration COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/agent_workers_test.py)
+        set_tests_properties(agent-workers-integration PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 180 RUN_SERIAL TRUE)
         add_test(NAME agent-unit COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests/agent -v)
         set_tests_properties(agent-unit PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
             ENVIRONMENT "RAGENT_SERVER=$<TARGET_FILE:agent-server>" TIMEOUT 60

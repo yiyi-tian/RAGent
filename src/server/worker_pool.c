@@ -5,12 +5,50 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
-#ifdef RAGENT_TESTING
+#include <stdatomic.h>
 #include <time.h>
-#endif
 #include <stdlib.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
+
+struct WorkerLifetime {
+    atomic_uint references;
+    atomic_bool cancelled;
+};
+
+WorkerLifetime *worker_lifetime_create(void)
+{
+    WorkerLifetime *lifetime = malloc(sizeof(*lifetime));
+    if (lifetime != NULL) {
+        atomic_init(&lifetime->references, 1);
+        atomic_init(&lifetime->cancelled, false);
+    }
+    return lifetime;
+}
+
+void worker_lifetime_cancel(WorkerLifetime *lifetime)
+{
+    if (lifetime != NULL) {
+        atomic_store(&lifetime->cancelled, true);
+    }
+}
+
+bool worker_lifetime_cancelled(const WorkerLifetime *lifetime)
+{
+    return lifetime != NULL && atomic_load(&lifetime->cancelled);
+}
+
+void worker_lifetime_release(WorkerLifetime *lifetime)
+{
+    if (lifetime != NULL && atomic_fetch_sub(&lifetime->references, 1) == 1) {
+        free(lifetime);
+    }
+}
+
+typedef struct {
+    WorkItem item;
+    uint64_t enqueued_ns;
+} QueuedTask;
 
 struct WorkerPool {
     pthread_mutex_t mutex;
@@ -18,7 +56,7 @@ struct WorkerPool {
     pthread_cond_t result_space;
     pthread_t *threads;
     unsigned started;
-    WorkItem *tasks;
+    QueuedTask *tasks;
     size_t task_capacity;
     size_t task_head;
     size_t task_count;
@@ -27,11 +65,32 @@ struct WorkerPool {
     size_t result_head;
     size_t result_count;
     bool stopping;
+    size_t active_count;
+    unsigned timeout_ms;
 #ifdef RAGENT_TESTING
     unsigned waiting_results;
 #endif
     int event_fd;
 };
+
+static uint64_t monotonic_ns(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return 0;
+    }
+    return (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
+}
+
+static void log_task_event(const WorkItem *item, const char *event)
+{
+    if (getenv("RAGENT_METRICS") != NULL) {
+        fprintf(stderr, "[TASK] conn=%llu req=%llu event=%s ns=%llu\n",
+                (unsigned long long)item->connection_id,
+                (unsigned long long)item->frame.request_id,
+                event, (unsigned long long)monotonic_ns());
+    }
+}
 
 static void notify_network(WorkerPool *pool)
 {
@@ -58,9 +117,11 @@ static void *worker_main(void *argument)
             pthread_mutex_unlock(&pool->mutex);
             break;
         }
-        WorkItem item = pool->tasks[pool->task_head];
+        WorkItem item = pool->tasks[pool->task_head].item;
+        uint64_t enqueued_ns = pool->tasks[pool->task_head].enqueued_ns;
         pool->task_head = (pool->task_head + 1) % pool->task_capacity;
         --pool->task_count;
+        ++pool->active_count;
         pthread_mutex_unlock(&pool->mutex);
 
 #ifdef RAGENT_TESTING
@@ -79,10 +140,53 @@ static void *worker_main(void *argument)
             }
         }
 #endif
+        if (worker_lifetime_cancelled(item.lifetime)) {
+            log_task_event(&item, "discarded");
+            fprintf(stderr, "[INFO] conn=%llu req=%llu stage=discard reason=disconnect\n",
+                    (unsigned long long)item.connection_id,
+                    (unsigned long long)item.frame.request_id);
+            frame_destroy(&item.frame);
+            worker_lifetime_release(item.lifetime);
+            pthread_mutex_lock(&pool->mutex);
+            --pool->active_count;
+            pthread_mutex_unlock(&pool->mutex);
+            continue;
+        }
+        uint64_t started_ns = monotonic_ns();
         Frame response = {0};
-        int status = agent_http_request(&item.frame, &response);
+        int status;
+        uint64_t elapsed_ms = (started_ns - enqueued_ns) / 1000000ULL;
+        if (started_ns == 0 || enqueued_ns == 0) {
+            status = frame_make_error(item.frame.request_id, "INTERNAL_ERROR",
+                                      "无法读取请求时钟", &response);
+        } else if (elapsed_ms >= pool->timeout_ms) {
+            status = frame_make_error(item.frame.request_id, "UPSTREAM_TIMEOUT",
+                                      "请求排队后已超过时限，未执行", &response);
+        } else {
+            unsigned remaining_ms = pool->timeout_ms - (unsigned)elapsed_ms;
+            status = agent_http_request_controlled(&item.frame, remaining_ms,
+                                                   item.lifetime, &response);
+        }
+        pthread_mutex_lock(&pool->mutex);
+        --pool->active_count;
+        log_task_event(&item, "completed");
+        size_t queued = pool->task_count;
+        size_t active = pool->active_count;
+        size_t results = pool->result_count;
+        pthread_mutex_unlock(&pool->mutex);
+        if (getenv("RAGENT_METRICS") != NULL && enqueued_ns != 0) {
+            fprintf(stderr,
+                    "[PERF] conn=%llu req=%llu queue_ms=%.3f http_ms=%.3f "
+                    "queued=%zu active=%zu results=%zu\n",
+                    (unsigned long long)item.connection_id,
+                    (unsigned long long)item.frame.request_id,
+                    (started_ns - enqueued_ns) / 1000000.0,
+                    (monotonic_ns() - started_ns) / 1000000.0, queued, active, results);
+        }
         uint64_t request_id = item.frame.request_id;
         frame_destroy(&item.frame);
+        worker_lifetime_release(item.lifetime);
+        item.lifetime = NULL;
         if (status != 0 &&
             frame_make_error(request_id, "INTERNAL_ERROR", "处理请求失败", &response) != 0) {
             response.request_id = request_id;
@@ -113,13 +217,15 @@ static void *worker_main(void *argument)
     return NULL;
 }
 
-WorkerPool *worker_pool_create(unsigned threads, unsigned task_capacity, unsigned result_capacity)
+WorkerPool *worker_pool_create(unsigned threads, unsigned task_capacity, unsigned result_capacity,
+                               unsigned timeout_ms)
 {
     WorkerPool *pool = calloc(1, sizeof(*pool));
     if (!pool) {
         return NULL;
     }
     pool->event_fd = -1;
+    pool->timeout_ms = timeout_ms;
     if (pthread_mutex_init(&pool->mutex, NULL) != 0) {
         goto fail_pool;
     }
@@ -169,9 +275,14 @@ bool worker_pool_submit(WorkerPool *pool, WorkItem *item)
         return false;
     }
     size_t tail = (pool->task_head + pool->task_count) % pool->task_capacity;
-    pool->tasks[tail] = *item;
+    pool->tasks[tail].enqueued_ns = monotonic_ns();
+    if (item->lifetime != NULL) {
+        atomic_fetch_add(&item->lifetime->references, 1);
+    }
+    pool->tasks[tail].item = *item;
     item->frame.body = NULL;
     ++pool->task_count;
+    log_task_event(item, "accepted");
     pthread_cond_signal(&pool->tasks_ready);
     pthread_mutex_unlock(&pool->mutex);
     return true;
@@ -213,8 +324,14 @@ void worker_pool_destroy(WorkerPool *pool)
     for (unsigned i = 0; i < pool->started; ++i) {
         pthread_join(pool->threads[i], NULL);
     }
+    if (getenv("RAGENT_METRICS") != NULL) {
+        fprintf(stderr, "[POOL] shutdown queued=%zu active=%zu results=%zu\n",
+                pool->task_count, pool->active_count, pool->result_count);
+    }
     for (size_t i = 0; i < pool->task_count; ++i) {
-        frame_destroy(&pool->tasks[(pool->task_head + i) % pool->task_capacity].frame);
+        WorkItem *item = &pool->tasks[(pool->task_head + i) % pool->task_capacity].item;
+        frame_destroy(&item->frame);
+        worker_lifetime_release(item->lifetime);
     }
     for (size_t i = 0; i < pool->result_count; ++i) {
         frame_destroy(&pool->results[(pool->result_head + i) % pool->result_capacity].frame);

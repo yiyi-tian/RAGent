@@ -4,15 +4,15 @@ import argparse
 import json
 import sys
 
-from .corpus import DEFAULT_MANUALS, prepare_manual
+from .corpus import DEFAULT_CHUNKING, DEFAULT_MANUALS, prepare_manual
 from .search import search_linux_manual
 from .services import ServiceError, configured_services
 
 
-def import_manuals(names, embedding, store):
+def import_manuals(names, embedding, store, chunking=DEFAULT_CHUNKING):
     chunks = []
     for name in names:
-        chunks.extend(prepare_manual(name))
+        chunks.extend(prepare_manual(name, chunking=chunking))
     if not chunks:
         raise ValueError("没有可导入的手册")
     for offset in range(0, len(chunks), 10):
@@ -39,6 +39,11 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
     importer = subparsers.add_parser("import", help="导入发行版手册")
     importer.add_argument("manuals", nargs="*", default=list(DEFAULT_MANUALS))
+    importer.add_argument(
+        "--chunking",
+        choices=("v1", "paragraph-v2", "entry-v3", "multi-v4"),
+        default=DEFAULT_CHUNKING,
+    )
     search = subparsers.add_parser("search", help="语义检索手册")
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=5)
@@ -46,7 +51,7 @@ def main():
     try:
         embedding, store = configured_services()
         if args.command == "import":
-            result = import_manuals(args.manuals, embedding, store)
+            result = import_manuals(args.manuals, embedding, store, args.chunking)
         else:
             result = search_linux_manual(args.query, embedding, store, args.limit)
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))

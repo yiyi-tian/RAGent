@@ -65,21 +65,38 @@ class Handler(BaseHTTPRequestHandler):
             ]
             return self.reply(200, {"data": [] if self.embeddings_invalid else data})
         if self.path == "/collections/manual/points/scroll":
-            source = body["filter"]["must"][0]["match"]["value"]
-            points = [
-                {"id": point["id"]}
-                for point in self.points.values()
-                if point["payload"]["source"] == source
-            ]
+            points = []
+            source = body.get("filter", {}).get("must", [{}])[0].get("match", {}).get("value")
+            for point in self.points.values():
+                if source is not None and point["payload"]["source"] != source:
+                    continue
+                entry = {"id": point["id"]}
+                if body.get("with_payload"):
+                    entry["payload"] = point["payload"]
+                points.append(entry)
             return self.reply(
                 200, {"status": "ok", "result": {"points": points, "next_page_offset": None}}
             )
-        if self.path == "/collections/manual/points/query":
-            points = [
-                {"payload": point["payload"], "score": 0.9}
-                for point in list(self.points.values())[: body["limit"]]
-            ]
-            return self.reply(200, {"status": "ok", "result": {"points": points}})
+        if self.path in (
+            "/collections/manual/points/query",
+            "/collections/manual/points/query/batch",
+        ):
+            requests = body["searches"] if self.path.endswith("/batch") else [body]
+            results = []
+            for request in requests:
+                points = []
+                conditions = request.get("filter", {}).get("must", [])
+                for point in self.points.values():
+                    payload = point["payload"]
+                    if any(payload.get(c["key"]) != c["match"]["value"] for c in conditions):
+                        continue
+                    entry = {"id": point["id"], "score": 0.9}
+                    if request.get("with_payload"):
+                        entry["payload"] = payload
+                    points.append(entry)
+                results.append({"points": points[: request["limit"]]})
+            result = results if self.path.endswith("/batch") else results[0]
+            return self.reply(200, {"status": "ok", "result": result})
         return self.reply(404, {})
 
 
@@ -157,6 +174,90 @@ class RagTests(unittest.TestCase):
         Handler.points = {}
         self.assertEqual(search_linux_manual("不存在", self.embedding, self.store), [])
 
+    def test_context_strategy_reimport_and_search(self):
+        from rag.chunking import manual_chunks
+
+        text = "OPTIONS\n\n"
+        for index in range(8):
+            text += f"    option {index}: " + "description " * 5 + "\n\n"
+        chunks = manual_chunks(
+            {
+                "source": "ls(1)",
+                "language": "en",
+                "package": "coreutils",
+                "package_version": "1",
+                "license_file": "/copyright",
+                "text": text,
+            },
+            target=100,
+            limit=150,
+            overlap=0,
+        )
+        with patch("rag.__main__.prepare_manual", return_value=chunks):
+            import_manuals(["ls"], self.embedding, self.store)
+            import_manuals(["ls"], self.embedding, self.store)
+        self.assertEqual(len(Handler.points), len(chunks))
+        self.store.retrieval_strategy = "context"
+        before = len(Handler.batch_sizes)
+        result = search_linux_manual("option", self.embedding, self.store)
+        self.assertTrue(any("context_text" in match for match in result))
+        self.assertEqual(len(Handler.batch_sizes), before + 1)
+        index = self.store.search_index
+        self.store.prepare_search()
+        self.assertIs(self.store.search_index, index)
+        self.assertTrue(all(match["score"] == 0.9 for match in result))
+
+    def test_multigrain_roundtrip_and_package_only_change_is_rejected(self):
+        from rag.chunking import manual_chunks
+        from rag.entries import entry_chunks
+
+        text = (
+            "OPTIONS\n\n       -a\n           first option\n\n       -b\n           second option"
+        )
+        manual = {
+            "source": "ls(1)",
+            "language": "en",
+            "package": "test",
+            "package_version": "1",
+            "license_file": "/copyright",
+            "text": text,
+        }
+        chunks = manual_chunks(manual) + entry_chunks(manual)
+        with patch("rag.__main__.prepare_manual", return_value=chunks):
+            import_manuals(["ls"], self.embedding, self.store)
+            import_manuals(["ls"], self.embedding, self.store)
+        self.store.retrieval_strategy = "context"
+        before = len(Handler.batch_sizes)
+        result = search_linux_manual("first option", self.embedding, self.store)
+        self.assertTrue(self.store.search_index.multigrain)
+        self.assertEqual(len(Handler.batch_sizes), before + 1)
+        self.assertTrue(result)
+        self.assertTrue(all(0 < item["score"] < 0.9 for item in result))
+        unknown = {"result": [{"points": [{"id": "unknown", "score": 0.9}]}, {"points": []}]}
+        with patch.object(self.store, "_call", return_value=unknown):
+            with self.assertRaisesRegex(ServiceError, "格式错误"):
+                self.store.search_multigrain([1.0, 0.5, 0.1], 20)
+        changed = [{**chunk, "package_version": "2"} for chunk in chunks]
+        with patch("rag.__main__.prepare_manual", return_value=changed):
+            with self.assertRaisesRegex(ServiceError, "来源版本"):
+                import_manuals(["ls"], self.embedding, self.store)
+        self.assertTrue(
+            all(point["payload"]["package_version"] == "1" for point in Handler.points.values())
+        )
+
+    def test_default_import_builds_both_grains(self):
+        text = (
+            "OPTIONS\n\n       -a\n           first option\n\n       -b\n           second option"
+        )
+        with (
+            patch("rag.corpus.find_manual", return_value=("/test/ls.1", "en")),
+            patch("rag.corpus.package_info", return_value=("test", "1", "/copyright")),
+            patch("rag.corpus.render_manual", return_value=text),
+        ):
+            import_manuals(["ls"], self.embedding, self.store)
+        versions = {point["payload"]["chunking_version"] for point in Handler.points.values()}
+        self.assertEqual(versions, {"paragraph-v2", "entry-v3"})
+
     def test_batch_boundaries_and_provider_errors(self):
         chunk = {
             "source": "ls(1)",
@@ -179,7 +280,7 @@ class RagTests(unittest.TestCase):
             with self.assertRaisesRegex(ServiceError, message) as error:
                 self.embedding.embed(["test"])
             self.assertNotIn("secret should not leak", str(error.exception))
-        with patch("rag.services.urllib.request.build_opener") as opener:
+        with patch("rag.services.http_opener") as opener:
             opener.return_value.open.side_effect = TimeoutError()
             with self.assertRaisesRegex(ServiceError, "超时"):
                 self.embedding.embed(["test"])

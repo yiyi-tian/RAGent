@@ -1,8 +1,11 @@
+#define _POSIX_C_SOURCE 200809L
 #include "server/agent_http.h"
+#include "server/worker_pool.h"
 #include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static char endpoint[1024];
 static unsigned timeout = 12000;
@@ -39,8 +42,31 @@ static size_t receive_body(char *data, size_t size, size_t count, void *context)
     return length;
 }
 
-int agent_http_request(const Frame *request, Frame *response)
+static int transfer_progress(void *context, curl_off_t download_total, curl_off_t downloaded,
+                              curl_off_t upload_total, curl_off_t uploaded)
 {
+    (void)download_total;
+    (void)downloaded;
+    (void)upload_total;
+    (void)uploaded;
+    return worker_lifetime_cancelled(context) ? 1 : 0;
+}
+
+int agent_http_request(const Frame *request, unsigned remaining_ms, Frame *response)
+{
+    return agent_http_request_controlled(request, remaining_ms, NULL, response);
+}
+
+int agent_http_request_controlled(const Frame *request, unsigned remaining_ms,
+                                  const WorkerLifetime *lifetime, Frame *response)
+{
+    if (remaining_ms == 0) {
+        return frame_make_error(request->request_id, "UPSTREAM_TIMEOUT", "请求时限已到", response);
+    }
+    struct timespec started;
+    if (clock_gettime(CLOCK_MONOTONIC, &started) != 0) {
+        return frame_make_error(request->request_id, "INTERNAL_ERROR", "无法读取请求时钟", response);
+    }
     if (!endpoint[0]) {
         return handle_fixed_request(request, response);
     }
@@ -63,17 +89,35 @@ int agent_http_request(const Frame *request, Frame *response)
     snprintf(id, sizeof(id), "%llu", (unsigned long long)request->request_id);
     json_object_object_add(body, "request_id", json_object_new_string(id));
     json_object_object_add(body, "mode", json_object_new_string(modes[request->type]));
+    unsigned budget_ms = remaining_ms < timeout ? remaining_ms : timeout;
     CURL *curl = curl_easy_init();
     Buffer buffer = {0};
     struct curl_slist *headers = curl_slist_append(NULL, "Content-Type: application/json");
     CURLcode status = CURLE_FAILED_INIT;
     long http_status = 0;
-    if (curl && headers) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
+        int64_t elapsed_ms = (int64_t)(now.tv_sec - started.tv_sec) * 1000 +
+                             (now.tv_nsec - started.tv_nsec) / 1000000;
+        if (elapsed_ms >= budget_ms) {
+            budget_ms = 0;
+            status = CURLE_OPERATION_TIMEDOUT;
+        } else {
+            budget_ms -= (unsigned)elapsed_ms;
+        }
+    } else {
+        budget_ms = 0;
+    }
+    if (curl && headers && budget_ms > 0) {
+        json_object_object_add(body, "timeout_ms", json_object_new_int64(budget_ms));
         curl_easy_setopt(curl, CURLOPT_URL, endpoint);
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_object_to_json_string(body));
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)timeout);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)budget_ms);
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, transfer_progress);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, lifetime);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, receive_body);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
         status = curl_easy_perform(curl);
@@ -115,6 +159,9 @@ int agent_http_request(const Frame *request, Frame *response)
     if (result) {
         json_object_put(result);
     }
+    fprintf(stderr, "[%s] upstream req=%llu curl=%d http=%ld bytes=%zu\n",
+            worker_lifetime_cancelled(lifetime) ? "INFO" : "WARN",
+            (unsigned long long)request->request_id, (int)status, http_status, buffer.length);
     free(buffer.data);
     return frame_make_error(request->request_id,
                             status == CURLE_OPERATION_TIMEDOUT ? "UPSTREAM_TIMEOUT"

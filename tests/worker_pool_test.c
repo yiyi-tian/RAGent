@@ -33,7 +33,7 @@ static void pause_briefly(void)
 
 int main(void)
 {
-    WorkerPool *pool = worker_pool_create(2, 8, 1);
+    WorkerPool *pool = worker_pool_create(2, 8, 1, 12000);
     assert(pool);
     submit(pool, 1);
     submit(pool, 2);

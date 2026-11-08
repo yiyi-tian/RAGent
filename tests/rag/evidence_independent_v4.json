@@ -1,0 +1,196 @@
+{
+  "version": "linux-manual-independent-v4",
+  "description": "选项/子命令单独分块实验之前冻结，最终一次独立验收，不参与调参。",
+  "cases": [
+    {
+      "id": "blind-v4-passwd",
+      "query": "passwd 怎么设置两次密码修改之间至少间隔多少天？",
+      "split": "independent_v4",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "evidence": [
+        {
+          "source": "passwd(1)",
+          "document_sha256": "a482b043563ad4a284114f4138207f2c253bfcd5bdb0736aeca76b13f41345d0",
+          "start": 2916,
+          "end": 3029,
+          "quote": "-n, --mindays MIN_DAYS\n           Set the minimum number of days between password changes to\n           MIN_DAYS."
+        }
+      ]
+    },
+    {
+      "id": "blind-v4-man",
+      "query": "man 如何显示同名条目的所有匹配手册页，而不是只显示第一个？",
+      "split": "independent_v4",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "evidence": [
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 8594,
+          "end": 8603,
+          "quote": "-a, --all"
+        },
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 8667,
+          "end": 8689,
+          "quote": "man 显示名字匹配搜索条件的所有的手册页。"
+        }
+      ]
+    },
+    {
+      "id": "blind-v4-ls",
+      "query": "ls 怎样按文件大小排序，让最大的文件排在最前面？",
+      "split": "independent_v4",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "evidence": [
+        {
+          "source": "ls(1)",
+          "document_sha256": "4230aa9967832b46d617283595ed5b55460937bf5fa23497b79ac8304c385bb2",
+          "start": 4677,
+          "end": 4716,
+          "quote": "-S     sort by file size, largest first"
+        }
+      ]
+    },
+    {
+      "id": "blind-v4-grep",
+      "query": "grep 如何只统计匹配行数，而不输出匹配行的正文？",
+      "split": "independent_v4",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "evidence": [
+        {
+          "source": "grep(1)",
+          "document_sha256": "bd1875d0a241e7bb668b8bc18052590e82f0fd76480dfa98582124f57260ff43",
+          "start": 4236,
+          "end": 4364,
+          "quote": "-c, --count\n              Suppress normal output; instead print a count of matching  lines\n              for  each  input  file."
+        }
+      ]
+    },
+    {
+      "id": "blind-v4-chmod",
+      "query": "chmod 如何抑制大多数错误消息？",
+      "split": "independent_v4",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "evidence": [
+        {
+          "source": "chmod(1)",
+          "document_sha256": "da1bffde7f9988f01d729396c2ea50cc60ba702170105b5f25a94e0e51f88b9c",
+          "start": 5175,
+          "end": 5239,
+          "quote": "-f, --silent, --quiet\n              suppress most error messages"
+        }
+      ]
+    },
+    {
+      "id": "blind-v4-ps",
+      "query": "ps 怎么指定输出记录的排序顺序？",
+      "split": "independent_v4",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "evidence": [
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 19532,
+          "end": 19588,
+          "quote": "--sort spec\n              Specify     sorting     order."
+        }
+      ]
+    },
+    {
+      "id": "blind-v4-gpasswd",
+      "query": "gpasswd 如何限制只有具有密码的组成员才能通过 newgrp 加入组？",
+      "split": "independent_v4",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "evidence": [
+        {
+          "source": "gpasswd(1)",
+          "document_sha256": "1075f53ff7bc2a1d21902f21ff7bc27d2e6b710f4d4bf32c7fd111d41f44e14b",
+          "start": 1740,
+          "end": 1805,
+          "quote": "-R, --restrict\n           Restrict the access to the named group."
+        },
+        {
+          "source": "gpasswd(1)",
+          "document_sha256": "1075f53ff7bc2a1d21902f21ff7bc27d2e6b710f4d4bf32c7fd111d41f44e14b",
+          "start": 1851,
+          "end": 1951,
+          "quote": "Only group members with a password will be allowed to use\n           newgrp to join the named group."
+        }
+      ]
+    },
+    {
+      "id": "blind-v4-systemctl",
+      "query": "systemctl 怎样停止服务后再启动，如果服务未运行则启动它？",
+      "split": "independent_v4",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "evidence": [
+        {
+          "source": "systemctl(1)",
+          "document_sha256": "fe2b4d027d40f3103718aabc496a63b8f11e08b08c288886e33976c549bc5250",
+          "start": 19511,
+          "end": 19676,
+          "quote": "restart PATTERN...\n           Stop and then start one or more units specified on the command\n           line. If the units are not running yet, they will be started."
+        }
+      ]
+    },
+    {
+      "id": "blind-v4-outside-1",
+      "query": "如何用 openssl 生成自签名证书？",
+      "split": "independent_v4",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    },
+    {
+      "id": "blind-v4-outside-2",
+      "query": "如何用 sed 批量替换文本？",
+      "split": "independent_v4",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    },
+    {
+      "id": "blind-v4-outside-3",
+      "query": "如何用 iptables 配置端口转发？",
+      "split": "independent_v4",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    },
+    {
+      "id": "blind-v4-outside-4",
+      "query": "如何用 kill 发送终止信号？",
+      "split": "independent_v4",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    }
+  ]
+}

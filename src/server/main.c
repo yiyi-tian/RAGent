@@ -15,9 +15,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+enum {
+    MAX_WORKER_THREADS = 256
+};
 
 typedef struct {
     char host[INET_ADDRSTRLEN];
@@ -41,6 +46,7 @@ typedef struct {
     int socket_fd;
     uint64_t id;
     uint64_t last_request_id;
+    WorkerLifetime *lifetime;
     FrameDecoder decoder;
     OutputChunk *output_head;
     OutputChunk *output_tail;
@@ -72,11 +78,11 @@ static Options default_options(void)
     Options options = {
         .host = "127.0.0.1",
         .port = 9000,
-        .agent_timeout_ms = 12000,
-        .max_connections = 128,
+        .agent_timeout_ms = 125000,
+        .max_connections = 2048,
         .max_pending_bytes = 2U * 1024U * 1024U,
-        .worker_threads = 4,
-        .task_capacity = 256,
+        .worker_threads = 64,
+        .task_capacity = 1024,
         .result_capacity = 256,
     };
     return options;
@@ -198,7 +204,7 @@ static int load_config(const char *path, Options *options, char *error, size_t e
             unsigned maximum = 4096;
             if (strcmp(key, "worker_threads") == 0) {
                 target = &options->worker_threads;
-                maximum = 64;
+                maximum = MAX_WORKER_THREADS;
             } else if (strcmp(key, "task_capacity") == 0) {
                 target = &options->task_capacity;
             } else {
@@ -271,7 +277,8 @@ static int parse_options(int argc, char **argv, Options *options, char *error, s
         } else if (strcmp(argument, "--worker-threads") == 0 ||
                    strcmp(argument, "--task-capacity") == 0 ||
                    strcmp(argument, "--result-capacity") == 0) {
-            unsigned maximum = strcmp(argument, "--worker-threads") == 0 ? 64 : 4096;
+            unsigned maximum =
+                strcmp(argument, "--worker-threads") == 0 ? MAX_WORKER_THREADS : 4096;
             if (parse_unsigned(value, 1, maximum, &parsed) != 0) {
                 goto invalid_number;
             }
@@ -314,6 +321,8 @@ static void output_chunks_destroy(OutputChunk *chunk)
 
 static void connection_destroy(Connection *connection)
 {
+    worker_lifetime_cancel(connection->lifetime);
+    worker_lifetime_release(connection->lifetime);
     if (connection->socket_fd >= 0) {
         close(connection->socket_fd);
     }
@@ -389,6 +398,7 @@ static int process_frame(Server *server, uint64_t connection_id, Connection *con
         request->type <= MESSAGE_AGENT_REQUEST) {
         WorkItem item = {
             .connection_id = connection_id,
+            .lifetime = connection->lifetime,
             .frame = *request,
         };
         if (worker_pool_submit(server->workers, &item)) {
@@ -540,7 +550,13 @@ static void accept_connections(Server *server)
         }
         id += adjustment;
         server->next_connection_id = id + 1;
+        WorkerLifetime *lifetime = worker_lifetime_create();
+        if (lifetime == NULL) {
+            close(client_fd);
+            return;
+        }
         if (watch_fd(server, EPOLL_CTL_ADD, client_fd, id, EPOLLIN | EPOLLRDHUP) != 0) {
+            worker_lifetime_release(lifetime);
             print_system_error("epoll_ctl(ADD client)");
             close(client_fd);
             continue;
@@ -550,10 +566,31 @@ static void accept_connections(Server *server)
         memset(connection, 0, sizeof(*connection));
         connection->socket_fd = client_fd;
         connection->id = id;
+        connection->lifetime = lifetime;
         connection->interest = EPOLLIN | EPOLLRDHUP;
         frame_decoder_init(&connection->decoder);
         fprintf(stderr, "[INFO] conn=%" PRIu64 " stage=accept\n", id);
     }
+}
+
+static int ensure_file_limit(const Options *options)
+{
+    struct rlimit limits;
+    if (getrlimit(RLIMIT_NOFILE, &limits) != 0) {
+        return -1;
+    }
+    const rlim_t required = options->max_connections + 2U * options->worker_threads + 64U;
+    if (limits.rlim_cur >= required) {
+        return 0;
+    }
+    if (limits.rlim_max < required) {
+        fprintf(stderr, "文件描述符硬限制不足，需要至少 %ju\n", (uintmax_t)required);
+        errno = EMFILE;
+        return -1;
+    }
+    // 只提高本进程软限制，覆盖客户端、上游 HTTP 及控制描述符，不修改系统硬限制。
+    limits.rlim_cur = required;
+    return setrlimit(RLIMIT_NOFILE, &limits);
 }
 
 static int server_init(Server *server, const Options *options)
@@ -564,6 +601,9 @@ static int server_init(Server *server, const Options *options)
     server->signal_fd = -1;
     server->options = *options;
     server->next_connection_id = 3;
+    if (ensure_file_limit(options) != 0) {
+        return -1;
+    }
     server->connections = calloc(options->max_connections, sizeof(*server->connections));
     if (server->connections == NULL) {
         return -1;
@@ -584,7 +624,7 @@ static int server_init(Server *server, const Options *options)
         return -1;
     }
     if (bind(server->listener_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
-        listen(server->listener_fd, 128) != 0) {
+        listen(server->listener_fd, (int)options->max_connections) != 0) {
         return -1;
     }
     socklen_t address_size = sizeof(address);
@@ -608,7 +648,8 @@ static int server_init(Server *server, const Options *options)
         return -1;
     }
     server->workers = worker_pool_create(
-        options->worker_threads, options->task_capacity, options->result_capacity);
+        options->worker_threads, options->task_capacity, options->result_capacity,
+        options->agent_timeout_ms);
     if (!server->workers) {
         return -1;
     }
@@ -626,13 +667,13 @@ static int server_init(Server *server, const Options *options)
 
 static void server_destroy(Server *server)
 {
-    worker_pool_destroy(server->workers);
     for (size_t index = 0; server->connections && index < server->options.max_connections;
          ++index) {
         if (server->connections[index].socket_fd >= 0) {
             connection_destroy(&server->connections[index]);
         }
     }
+    worker_pool_destroy(server->workers);
     free(server->connections);
     if (server->listener_fd >= 0) {
         close(server->listener_fd);
@@ -734,7 +775,8 @@ static int server_run(Server *server)
             if (!failed && (flags & EPOLLIN) != 0 && read_requests(server, id, connection) != 0) {
                 failed = 1;
             }
-            if (!failed && (flags & EPOLLOUT) != 0 && write_responses(connection) != 0) {
+            // 网络线程刚生成的 PONG 或拒绝响应可立即尝试发送，EAGAIN 时再等待 EPOLLOUT。
+            if (!failed && connection->output_head != NULL && write_responses(connection) != 0) {
                 failed = 1;
             }
             if (!failed) {

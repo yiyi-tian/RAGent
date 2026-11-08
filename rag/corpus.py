@@ -8,6 +8,7 @@ import subprocess
 import uuid
 
 DEFAULT_MANUALS = ("passwd", "man", "ls", "grep", "chmod", "ps", "gpasswd", "systemctl")
+DEFAULT_CHUNKING = "multi-v4"
 MAN_ROOT = Path("/usr/share/man")
 NAMESPACE = uuid.UUID("41e596b2-0699-45b6-b4eb-8b3284b18b72")
 
@@ -74,11 +75,32 @@ def split_sections(text, limit=1000):
                 yield heading, chunk
 
 
-def prepare_manual(name, root=MAN_ROOT):
+def prepare_manual(name, root=MAN_ROOT, chunking="v1"):
     path, language = find_manual(name, root)
     package, version, license_path = package_info(path)
+    text = render_manual(path)
+    if chunking in ("paragraph-v2", "entry-v3", "multi-v4"):
+        from .chunking import manual_chunks
+        from .entries import entry_chunks
+
+        manual = {
+            "source": f"{name}(1)",
+            "language": language,
+            "package": package,
+            "package_version": version,
+            "license_file": license_path,
+            "text": text,
+        }
+        chunks = []
+        if chunking in ("paragraph-v2", "multi-v4"):
+            chunks.extend(manual_chunks(manual))
+        if chunking in ("entry-v3", "multi-v4"):
+            chunks.extend(entry_chunks(manual))
+        return chunks
+    if chunking != "v1":
+        raise ValueError("未知的分块版本")
     chunks = []
-    for index, (heading, text) in enumerate(split_sections(render_manual(path))):
+    for index, (heading, text) in enumerate(split_sections(text)):
         identity = f"{name}:1:{language}:{package}:{version}:{index}:{text}"
         chunk_id = str(uuid.uuid5(NAMESPACE, identity))
         chunks.append(

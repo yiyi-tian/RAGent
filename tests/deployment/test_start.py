@@ -25,7 +25,7 @@ class DeploymentTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        for folder in ("scripts", "config", "bin", "build", ".venv/bin"):
+        for folder in ("scripts", "config", "bin", "build", ".venv/bin", "rag"):
             (self.root / folder).mkdir(parents=True)
         shutil.copyfile(SCRIPT, self.root / "scripts/start.sh")
         self.ports = [available_port(), available_port()]
@@ -68,13 +68,14 @@ if [[ $1 == container ]]; then exit 1; fi
 if [[ ${TEST_NEW_QDRANT:-} == 1 && "$*" == *'--max-time 2'* ]]; then exit 1; fi
 """,
         )
-        self.program("bin/cmake", "#!/bin/sh\nexit 0\n")
-        self.program(".venv/bin/pip", "#!/bin/sh\nexit 0\n")
+        self.program("bin/cmake", "#!/bin/sh\necho build >> build.calls\n")
+        self.program(".venv/bin/pip", "#!/bin/sh\necho install >> install.calls\n")
         self.program(
             ".venv/bin/ragent-manual",
             """#!/bin/bash
 if [[ $1 == import ]]; then echo import >> import.calls; fi
 if [[ $1 == search ]]; then
+    echo search >> search.calls
     result=${TEST_SEARCH_RESULT:-}
     if [[ -z $result ]]; then result='[{}]'; fi
     echo "$result"
@@ -100,6 +101,28 @@ with socket.socket() as listener:
 """
         self.program(".venv/bin/ragent-server", service)
         self.program("build/agent-server", service)
+        self.program("build/agent", "#!/bin/sh\nexit 0\n")
+        (self.root / "rag/__init__.py").write_text("")
+        (self.root / "rag/services.py").write_text("""
+class ServiceError(Exception):
+    pass
+
+class Embedding:
+    model = "text-embedding-v4"
+    def embed(self, texts):
+        raise AssertionError("日常启动不能调用 Embedding")
+
+class Store:
+    def _call(self, method, path="", data=None):
+        if path:
+            return {"result": {"count": 2}}
+        return {"result": {"config": {"params": {"vectors": {"size": 1024}}}}}
+    def ensure_collection(self, dimension):
+        pass
+
+def configured_services():
+    return Embedding(), Store()
+""")
 
     def program(self, name, text):
         path = self.root / name
@@ -107,10 +130,17 @@ with socket.socket() as listener:
         path.chmod(0o755)
 
     def test_start_and_cleanup(self):
-        self.env["TEST_NEW_QDRANT"] = "1"
+        self.check_start(deploy=True)
+
+    def test_daily_start_skips_install_build_and_cloud(self):
+        self.check_start(deploy=False)
+
+    def check_start(self, deploy):
+        if deploy:
+            self.env["TEST_NEW_QDRANT"] = "1"
         with tempfile.TemporaryFile() as output:
             process = subprocess.Popen(
-                ["bash", "scripts/start.sh"],
+                ["bash", "scripts/start.sh"] + (["--deploy"] if deploy else []),
                 cwd=self.root,
                 env=self.env,
                 stdout=output,
@@ -125,9 +155,13 @@ with socket.socket() as listener:
                     time.sleep(0.05)
                 else:
                     self.fail("受控服务未启动")
-                self.assertTrue((self.root / "import.calls").exists())
-                self.assertIn("volume create", (self.root / "docker.calls").read_text())
-                self.assertIn("run -d", (self.root / "docker.calls").read_text())
+                if deploy:
+                    self.assertTrue((self.root / "import.calls").exists())
+                    self.assertIn("volume create", (self.root / "docker.calls").read_text())
+                    self.assertIn("run -d", (self.root / "docker.calls").read_text())
+                else:
+                    for name in ("import.calls", "search.calls", "build.calls", "install.calls"):
+                        self.assertFalse((self.root / name).exists(), name)
                 process.send_signal(signal.SIGTERM)
                 self.assertEqual(process.wait(timeout=15), 143)
                 for port in self.ports:
@@ -141,7 +175,7 @@ with socket.socket() as listener:
     def test_skip_import_rejects_empty_collection(self):
         self.env["TEST_SEARCH_RESULT"] = "[]"
         result = subprocess.run(
-            ["bash", "scripts/start.sh", "--skip-import"],
+            ["bash", "scripts/start.sh", "--deploy", "--skip-import"],
             cwd=self.root,
             env=self.env,
             capture_output=True,

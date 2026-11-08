@@ -4,6 +4,8 @@ import concurrent.futures
 import errno
 import json
 import os
+import pty
+import resource
 import select
 import signal
 import socket
@@ -97,6 +99,32 @@ class NetworkTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.close()
         assert cls.server.process.returncode == 0
+
+    def test_server_raises_its_file_descriptor_soft_limit(self):
+        wrapper = """
+import os
+import resource
+import sys
+
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (64, hard))
+os.execv(sys.argv[1], sys.argv[1:])
+"""
+        process = subprocess.Popen(
+            [sys.executable, "-c", wrapper, SERVER, "--port", "0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 10)[0])
+            self.assertTrue(process.stdout.readline().startswith("Listening on"))
+            soft, _ = resource.prlimit(process.pid, resource.RLIMIT_NOFILE)
+            self.assertGreaterEqual(soft, 2048 + 2 * 64 + 64)
+        finally:
+            process.terminate()
+            process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 0)
 
     def client(self, *arguments, input=None, timeout=10):
         return subprocess.run(
@@ -483,6 +511,89 @@ class ClientPeerTests(unittest.TestCase):
                 if process.poll() is None:
                     process.kill()
                     process.communicate()
+
+    def test_terminal_wait_indicator(self):
+        for outcome in ("success", "error", "disconnect", "timeout", "interrupt"):
+            with self.subTest(outcome=outcome), socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                listener.settimeout(5)
+                master, slave = pty.openpty()
+                process = subprocess.Popen(
+                    [
+                        CLIENT,
+                        "--port",
+                        str(listener.getsockname()[1]),
+                        "--timeout-ms",
+                        "1800",
+                        "--mode",
+                        "chat",
+                        "--query",
+                        "hello",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=slave,
+                    stderr=slave,
+                    env=dict(os.environ, TERM="xterm"),
+                )
+                os.close(slave)
+                output = bytearray()
+                try:
+                    with listener.accept()[0] as connection:
+                        connection.settimeout(5)
+                        receive(connection)
+                        deadline = time.monotonic() + 3
+                        while "等待服务响应".encode() not in output:
+                            self.assertLess(time.monotonic(), deadline, output)
+                            if select.select([master], [], [], 0.2)[0]:
+                                output.extend(os.read(master, 65536))
+                        if outcome == "success":
+                            connection.sendall(
+                                frame(100, 1, dump({"text": "answer", "sources": []}))
+                            )
+                        elif outcome == "error":
+                            connection.sendall(
+                                frame(101, 1, dump({"code": "SERVER_BUSY", "message": "繁忙"}))
+                            )
+                        elif outcome == "disconnect":
+                            connection.shutdown(socket.SHUT_RDWR)
+                        elif outcome == "interrupt":
+                            process.send_signal(signal.SIGINT)
+                        process.wait(timeout=5)
+                    while True:
+                        try:
+                            chunk = os.read(master, 65536)
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                            break
+                        if not chunk:
+                            break
+                        output.extend(chunk)
+                    text = output.decode()
+                    self.assertIn("秒", text)
+                    self.assertGreater(text.rfind("\x1b[2K"), text.index("等待服务响应"))
+                    if outcome == "success":
+                        self.assertEqual(process.returncode, 0, text)
+                        self.assertIn("answer", text)
+                        self.assertLess(text.rfind("\x1b[2K"), text.index("answer"))
+                    else:
+                        self.assertNotEqual(process.returncode, 0, text)
+                    if outcome == "interrupt":
+                        self.assertIn("服务端任务可能仍在执行", text)
+                    if outcome == "timeout":
+                        self.assertIn("请求执行结果未知", text)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait()
+                    os.close(master)
+
+    def test_redirected_wait_has_no_animation(self):
+        result = self.run_peer(None, timeout_ms=800)
+        self.assertEqual(result[0], 1)
+        self.assertNotIn("等待服务响应", result[2])
+        self.assertNotIn("\x1b", result[2])
 
     def test_remote_error_exit_code(self):
         result = self.run_peer(frame(101, 1, dump({"code": "INVALID_REQUEST", "message": "失败"})))

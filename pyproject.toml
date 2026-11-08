@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.10,<4",
+    "uvloop>=0.22,<0.23",
+    "httpx2>=2.16,<3",
+    "openai[aiohttp]>=3.45,<4",
     "langchain-core>=1,<2",
     "langchain-openai>=1,<2",
 ]

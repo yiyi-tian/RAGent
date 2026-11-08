@@ -95,7 +95,7 @@ static int parse_options(int argc, char **argv, Options *options)
     memset(options, 0, sizeof(*options));
     strcpy(options->host, "127.0.0.1");
     options->port = 9000;
-    options->timeout_ms = 10000;
+    options->timeout_ms = 130000;
     options->mode = CLIENT_MODE_AGENT;
     bool has_mode = false;
     bool has_query = false;
@@ -155,41 +155,80 @@ static int parse_options(int argc, char **argv, Options *options)
     return 0;
 }
 
-static int wait_socket(int fd, short events, int64_t deadline_ms)
+static int wait_socket(int fd, short events, int64_t deadline_ms, int64_t request_started_ms)
 {
+    bool shown = false;
+    unsigned step = 0;
+    int result = -1;
     while (!interrupted) {
         struct timespec now;
         if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-            return -1;
+            break;
         }
         const int64_t current_ms = (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
         const int64_t remaining = deadline_ms - current_ms;
         if (remaining <= 0) {
-            fprintf(stderr, "网络等待超时，连接关闭；请求执行结果未知，不自动重试\n");
             errno = ETIMEDOUT;
-            return -1;
+            break;
         }
-        struct pollfd descriptor = {.fd = fd, .events = events, .revents = 0};
-        const int count = poll(&descriptor, 1, remaining > INT_MAX ? INT_MAX : (int)remaining);
+        int poll_ms = remaining > INT_MAX ? INT_MAX : (int)remaining;
+        if (request_started_ms >= 0 && poll_ms > 200) {
+            poll_ms = 200;
+        }
+        struct pollfd descriptor = {
+            .fd = fd,
+            .events = events,
+            .revents = 0,
+        };
+        const int count = poll(&descriptor, 1, poll_ms);
         if (count < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            return -1;
+            break;
         }
         if (count == 0) {
+            /* 就绪事件直接返回，避免半包连续到达时反复刷新终端。 */
+            if (request_started_ms >= 0) {
+                if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+                    break;
+                }
+                const int64_t elapsed_ms = (int64_t)now.tv_sec * 1000 +
+                                           now.tv_nsec / 1000000 - request_started_ms;
+                if (elapsed_ms >= 500) {
+                    const char symbols[] = "|/-\\";
+                    fprintf(stderr,
+                            "\r\033[2K%c 等待服务响应 %.1f 秒（Ctrl+C 退出等待）",
+                            symbols[step++ % 4],
+                            elapsed_ms / 1000.0);
+                    fflush(stderr);
+                    shown = true;
+                }
+            }
             continue;
         }
         if ((descriptor.revents & (events | POLLERR | POLLHUP)) != 0) {
-            return 0;
+            result = 0;
+            break;
         }
         if ((descriptor.revents & POLLNVAL) != 0) {
             errno = EBADF;
-            return -1;
+            break;
         }
     }
-    errno = EINTR;
-    return -1;
+    int saved_errno = interrupted ? EINTR : errno;
+    if (shown) {
+        fputs("\r\033[2K", stderr);
+        fflush(stderr);
+    }
+    if (result != 0 && saved_errno == ETIMEDOUT) {
+        fprintf(stderr, "网络等待超时，连接关闭；请求执行结果未知，不自动重试\n");
+    }
+    if (interrupted && request_started_ms >= 0) {
+        fprintf(stderr, "已停止等待；服务端任务可能仍在执行，不自动重试。\n");
+    }
+    errno = saved_errno;
+    return result;
 }
 
 static int64_t deadline_after(unsigned timeout_ms)
@@ -218,7 +257,7 @@ static int client_init(Client *client, const Options *options)
         goto failure;
     }
     if (result < 0) {
-        if (wait_socket(client->socket_fd, POLLOUT, deadline_after(client->timeout_ms)) != 0) {
+        if (wait_socket(client->socket_fd, POLLOUT, deadline_after(client->timeout_ms), -1) != 0) {
             goto failure;
         }
         int socket_error = 0;
@@ -356,7 +395,7 @@ static int client_request(Client *client, MessageType type, const char *query)
     const int64_t deadline = deadline_after(client->timeout_ms);
     size_t offset = 0;
     while (offset < encoded_length) {
-        if (wait_socket(client->socket_fd, POLLOUT, deadline) != 0) {
+        if (wait_socket(client->socket_fd, POLLOUT, deadline, -1) != 0) {
             goto io_error;
         }
         const ssize_t sent =
@@ -376,6 +415,10 @@ static int client_request(Client *client, MessageType type, const char *query)
     free(encoded);
     json_object_put(body);
 
+    const bool show_wait = isatty(STDERR_FILENO) && isatty(STDOUT_FILENO) &&
+                           type != MESSAGE_PING && getenv("TERM") != NULL &&
+                           strcmp(getenv("TERM"), "dumb") != 0;
+    const int64_t request_started_ms = show_wait ? deadline - client->timeout_ms : -1;
     unsigned char buffer[16384];
     while (true) {
         Frame response = {0};
@@ -397,7 +440,7 @@ static int client_request(Client *client, MessageType type, const char *query)
             frame_destroy(&response);
             return displayed;
         }
-        if (wait_socket(client->socket_fd, POLLIN, deadline) != 0) {
+        if (wait_socket(client->socket_fd, POLLIN, deadline, request_started_ms) != 0) {
             return -1;
         }
         const ssize_t received = recv(client->socket_fd, buffer, sizeof(buffer), 0);
@@ -574,7 +617,8 @@ int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         puts("agent [--host IPv4] [--port PORT] [--timeout-ms N]\n"
-             "      [--mode agent|chat|rag|cmd --query TEXT]");
+             "      [--mode agent|chat|rag|cmd --query TEXT]\n"
+             "响应等待默认 130000 毫秒，可通过 --timeout-ms 调整。");
         return 0;
     }
     struct sigaction action;

@@ -33,8 +33,10 @@ class RetrievalTests(unittest.IsolatedAsyncioTestCase):
         store = Store()
         with patch("ragent.retrieval.configured_services", return_value=(Embedding(), store)):
             retrieve = create_retriever()
+        self.addAsyncCleanup(retrieve.close)
         result = await retrieve("查询")
         self.assertNotIn("license_file", result["sources"][0])
+        self.assertIn("[1] ls(1)\n正文", result["text"])
         with patch.object(store, "search", return_value=[]):
             self.assertEqual((await retrieve("查询"))["sources"], [])
 

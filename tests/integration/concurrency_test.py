@@ -65,7 +65,7 @@ class ConcurrencyTests(unittest.TestCase):
     def test_invalid_pool_options(self):
         for option, value in (
             ("--worker-threads", "0"),
-            ("--worker-threads", "65"),
+            ("--worker-threads", "257"),
             ("--task-capacity", "0"),
             ("--result-capacity", "4097"),
         ):
