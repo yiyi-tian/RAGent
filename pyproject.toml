@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ragent-python"
+version = "0.1.0"
+description = "RAGent 在线 Agent、Linux 手册检索与评测工具"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.10,<4",
+    "uvloop>=0.22,<0.23",
+    "httpx2>=2.16,<3",
+    "openai[aiohttp]>=3.45,<4",
+    "langchain-core>=1,<2",
+    "langchain-openai>=1,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24,<27",
+    "pyright>=1.1,<2",
+    "build>=1,<2",
+]
+
+[project.scripts]
+ragent-server = "ragent.__main__:main"
+ragent-manual = "rag.__main__:main"
+ragent-evaluate = "tools.evaluate_rag:main"
+ragent-evaluate-evidence = "tools.evaluate_evidence:main"
+
+[tool.setuptools]
+packages = ["ragent", "rag", "tools"]
+package-dir = { ragent = "python/ragent", rag = "rag", tools = "tools" }
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.pyright]
+include = ["python/ragent"]
+extraPaths = ["python", "."]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"

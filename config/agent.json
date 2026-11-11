@@ -1,6 +1,11 @@
 {
   "host": "127.0.0.1",
   "port": 9000,
-  "max_connections": 128,
-  "max_pending_bytes": 2097152
+  "max_connections": 2048,
+  "max_pending_bytes": 2097152,
+  "worker_threads": 64,
+  "task_capacity": 1024,
+  "result_capacity": 256,
+  "agent_url": "http://127.0.0.1:9001/agent",
+  "agent_timeout_ms": 125000
 }

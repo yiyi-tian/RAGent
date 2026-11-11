@@ -1,0 +1,182 @@
+{
+  "version": "linux-manual-independent-v5",
+  "description": "多粒度开发集实验结果查看前冻结；不参与排名参数选择，仅最终一次独立验收。",
+  "cases": [
+    {
+      "id": "blind-v5-passwd",
+      "query": "passwd 如何解锁之前锁定的账户密码？",
+      "split": "independent_v5",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "evidence": [
+        {
+          "source": "passwd(1)",
+          "document_sha256": "a482b043563ad4a284114f4138207f2c253bfcd5bdb0736aeca76b13f41345d0",
+          "start": 3679,
+          "end": 3744,
+          "quote": "-u, --unlock\n           Unlock the password of the named account."
+        }
+      ]
+    },
+    {
+      "id": "blind-v5-man",
+      "query": "man 如何显示某个手册条目的简短说明？",
+      "split": "independent_v5",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "evidence": [
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 4883,
+          "end": 4948,
+          "quote": "-f, --whatis\n              大约等同于        whatis。显示来自手册页的加简短说明(若有)。"
+        }
+      ]
+    },
+    {
+      "id": "blind-v5-ls",
+      "query": "ls 怎样列出目录本身的信息，而不是列出目录里面的内容？",
+      "split": "independent_v5",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "evidence": [
+        {
+          "source": "ls(1)",
+          "document_sha256": "4230aa9967832b46d617283595ed5b55460937bf5fa23497b79ac8304c385bb2",
+          "start": 1306,
+          "end": 1383,
+          "quote": "-d, --directory\n              list directories themselves, not their contents"
+        }
+      ]
+    },
+    {
+      "id": "blind-v5-grep",
+      "query": "grep 如何只打印有匹配结果的文件名，而不显示匹配行？",
+      "split": "independent_v5",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "evidence": [
+        {
+          "source": "grep(1)",
+          "document_sha256": "bd1875d0a241e7bb668b8bc18052590e82f0fd76480dfa98582124f57260ff43",
+          "start": 5122,
+          "end": 5304,
+          "quote": "-l, --files-with-matches\n              Suppress normal output; instead print the  name  of  each  input\n              file  from  which  output  would  normally  have  been  printed."
+        }
+      ]
+    },
+    {
+      "id": "blind-v5-chmod",
+      "query": "chmod 怎么拒绝对根目录进行递归操作？",
+      "split": "independent_v5",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "evidence": [
+        {
+          "source": "chmod(1)",
+          "document_sha256": "da1bffde7f9988f01d729396c2ea50cc60ba702170105b5f25a94e0e51f88b9c",
+          "start": 5411,
+          "end": 5475,
+          "quote": "--preserve-root\n              fail to operate recursively on '/'"
+        }
+      ]
+    },
+    {
+      "id": "blind-v5-ps",
+      "query": "ps 怎么根据有效用户 ID 或名称筛选进程？",
+      "split": "independent_v5",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "evidence": [
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 10874,
+          "end": 10946,
+          "quote": "-u userlist\n              Select  by  effective  user ID (EUID) or name."
+        }
+      ]
+    },
+    {
+      "id": "blind-v5-gpasswd",
+      "query": "gpasswd 如何改用另一根目录中的配置文件，路径能否是相对路径？",
+      "split": "independent_v5",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "evidence": [
+        {
+          "source": "gpasswd(1)",
+          "document_sha256": "1075f53ff7bc2a1d21902f21ff7bc27d2e6b710f4d4bf32c7fd111d41f44e14b",
+          "start": 1324,
+          "end": 1518,
+          "quote": "-Q, --root CHROOT_DIR\n           Apply changes in the CHROOT_DIR directory and use the configuration\n           files from the CHROOT_DIR directory. Only absolute paths are\n           supported."
+        }
+      ]
+    },
+    {
+      "id": "blind-v5-systemctl",
+      "query": "systemctl 如何操作当前用户的服务管理器，而不是系统管理器？",
+      "split": "independent_v5",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "evidence": [
+        {
+          "source": "systemctl(1)",
+          "document_sha256": "fe2b4d027d40f3103718aabc496a63b8f11e08b08c288886e33976c549bc5250",
+          "start": 89585,
+          "end": 89709,
+          "quote": "--user\n           Talk to the service manager of the calling user, rather than the\n           service manager of the system."
+        }
+      ]
+    },
+    {
+      "id": "blind-v5-outside-1",
+      "query": "如何用 hostnamectl 设置机器名？",
+      "split": "independent_v5",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    },
+    {
+      "id": "blind-v5-outside-2",
+      "query": "如何给 curl 请求设置超时时间？",
+      "split": "independent_v5",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    },
+    {
+      "id": "blind-v5-outside-3",
+      "query": "如何用 tmux 创建和恢复会话？",
+      "split": "independent_v5",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    },
+    {
+      "id": "blind-v5-outside-4",
+      "query": "如何用 apt 安装软件包？",
+      "split": "independent_v5",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    }
+  ]
+}

@@ -4,3 +4,16 @@
 __pycache__/
 *.pyc
 *.docx
+
+# 本地环境配置可能包含密钥
+.env
+!.env.example
+
+# 本地生成的数据、快照和评测产物
+/artifacts/
+
+.venv/
+
+# Python 安装与打包产物
+*.egg-info/
+/dist/

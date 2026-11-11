@@ -1,7 +1,9 @@
 #define _GNU_SOURCE
+#include "server/agent_http.h"
 
 #include "net/socket.h"
 #include "protocol/protocol.h"
+#include "server/worker_pool.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -13,15 +15,25 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+enum {
+    MAX_WORKER_THREADS = 256
+};
+
 typedef struct {
     char host[INET_ADDRSTRLEN];
+    char agent_url[1024];
+    unsigned agent_timeout_ms;
     unsigned port;
     unsigned max_connections;
     unsigned max_pending_bytes;
+    unsigned worker_threads;
+    unsigned task_capacity;
+    unsigned result_capacity;
 } Options;
 
 typedef struct OutputChunk {
@@ -34,11 +46,13 @@ typedef struct {
     int socket_fd;
     uint64_t id;
     uint64_t last_request_id;
+    WorkerLifetime *lifetime;
     FrameDecoder decoder;
     OutputChunk *output_head;
     OutputChunk *output_tail;
     size_t output_offset;
     size_t pending_bytes;
+    uint32_t interest;
 } Connection;
 
 typedef struct {
@@ -49,6 +63,7 @@ typedef struct {
     Connection *connections;
     size_t connection_count;
     uint64_t next_connection_id;
+    WorkerPool *workers;
 } Server;
 
 static void set_error(char *buffer, size_t capacity, const char *message)
@@ -60,8 +75,16 @@ static void set_error(char *buffer, size_t capacity, const char *message)
 
 static Options default_options(void)
 {
-    Options options = {.host = "127.0.0.1", .port = 9000,
-                       .max_connections = 128, .max_pending_bytes = 2U * 1024U * 1024U};
+    Options options = {
+        .host = "127.0.0.1",
+        .port = 9000,
+        .agent_timeout_ms = 125000,
+        .max_connections = 2048,
+        .max_pending_bytes = 2U * 1024U * 1024U,
+        .worker_threads = 64,
+        .task_capacity = 1024,
+        .result_capacity = 256,
+    };
     return options;
 }
 
@@ -75,7 +98,9 @@ static int parse_config_number(json_object *value, const char *key, unsigned min
     const int64_t integer = json_object_get_int64(value);
     if (integer < 0 || (uint64_t)integer > UINT_MAX ||
         parse_unsigned(json_object_to_json_string_ext(value, JSON_C_TO_STRING_PLAIN),
-                       minimum, maximum, result) != 0) {
+                       minimum,
+                       maximum,
+                       result) != 0) {
         snprintf(error, error_size, "%s超出范围", key);
         return -1;
     }
@@ -95,7 +120,8 @@ static int load_config(const char *path, Options *options, char *error, size_t e
         return -1;
     }
     const long file_length = ftell(file);
-    if (file_length < 0 || file_length > (long)RAGENT_MAX_BODY_SIZE || fseek(file, 0, SEEK_SET) != 0) {
+    if (file_length < 0 || file_length > (long)RAGENT_MAX_BODY_SIZE ||
+        fseek(file, 0, SEEK_SET) != 0) {
         fclose(file);
         set_error(error, error_size, "配置文件大小非法");
         return -1;
@@ -122,8 +148,22 @@ static int load_config(const char *path, Options *options, char *error, size_t e
         return -1;
     }
 
-    json_object_object_foreach(root, key, value) {
-        if (strcmp(key, "host") == 0) {
+    json_object_object_foreach(root, key, value)
+    {
+        if (strcmp(key, "agent_url") == 0) {
+            if (!json_object_is_type(value, json_type_string) ||
+                strlen(json_object_get_string(value)) >= sizeof(options->agent_url)) {
+                json_object_put(root);
+                return -1;
+            }
+            strcpy(options->agent_url, json_object_get_string(value));
+        } else if (strcmp(key, "agent_timeout_ms") == 0) {
+            if (parse_config_number(
+                    value, key, 1, 600000, &options->agent_timeout_ms, error, error_size) != 0) {
+                json_object_put(root);
+                return -1;
+            }
+        } else if (strcmp(key, "host") == 0) {
             if (!json_object_is_type(value, json_type_string)) {
                 set_error(error, error_size, "host必须是字符串");
                 json_object_put(root);
@@ -142,14 +182,35 @@ static int load_config(const char *path, Options *options, char *error, size_t e
                 return -1;
             }
         } else if (strcmp(key, "max_connections") == 0) {
-            if (parse_config_number(value, key, 1, 4096, &options->max_connections, error, error_size) != 0) {
+            if (parse_config_number(
+                    value, key, 1, 4096, &options->max_connections, error, error_size) != 0) {
                 json_object_put(root);
                 return -1;
             }
         } else if (strcmp(key, "max_pending_bytes") == 0) {
-            if (parse_config_number(value, key, RAGENT_HEADER_SIZE + RAGENT_MAX_BODY_SIZE,
-                                   64U * 1024U * 1024U, &options->max_pending_bytes,
-                                   error, error_size) != 0) {
+            if (parse_config_number(value,
+                                    key,
+                                    RAGENT_HEADER_SIZE + RAGENT_MAX_BODY_SIZE,
+                                    64U * 1024U * 1024U,
+                                    &options->max_pending_bytes,
+                                    error,
+                                    error_size) != 0) {
+                json_object_put(root);
+                return -1;
+            }
+        } else if (strcmp(key, "worker_threads") == 0 || strcmp(key, "task_capacity") == 0 ||
+                   strcmp(key, "result_capacity") == 0) {
+            unsigned *target;
+            unsigned maximum = 4096;
+            if (strcmp(key, "worker_threads") == 0) {
+                target = &options->worker_threads;
+                maximum = MAX_WORKER_THREADS;
+            } else if (strcmp(key, "task_capacity") == 0) {
+                target = &options->task_capacity;
+            } else {
+                target = &options->result_capacity;
+            }
+            if (parse_config_number(value, key, 1, maximum, target, error, error_size) != 0) {
                 json_object_put(root);
                 return -1;
             }
@@ -196,21 +257,46 @@ static int parse_options(int argc, char **argv, Options *options, char *error, s
             }
             strcpy(options->host, value);
         } else if (strcmp(argument, "--port") == 0) {
-            if (parse_unsigned(value, 0, 65535, &parsed) != 0) goto invalid_number;
+            if (parse_unsigned(value, 0, 65535, &parsed) != 0) {
+                goto invalid_number;
+            }
             options->port = parsed;
         } else if (strcmp(argument, "--max-connections") == 0) {
-            if (parse_unsigned(value, 1, 4096, &parsed) != 0) goto invalid_number;
+            if (parse_unsigned(value, 1, 4096, &parsed) != 0) {
+                goto invalid_number;
+            }
             options->max_connections = parsed;
         } else if (strcmp(argument, "--max-pending-bytes") == 0) {
-            if (parse_unsigned(value, RAGENT_HEADER_SIZE + RAGENT_MAX_BODY_SIZE,
-                               64U * 1024U * 1024U, &parsed) != 0) goto invalid_number;
+            if (parse_unsigned(value,
+                               RAGENT_HEADER_SIZE + RAGENT_MAX_BODY_SIZE,
+                               64U * 1024U * 1024U,
+                               &parsed) != 0) {
+                goto invalid_number;
+            }
             options->max_pending_bytes = parsed;
+        } else if (strcmp(argument, "--worker-threads") == 0 ||
+                   strcmp(argument, "--task-capacity") == 0 ||
+                   strcmp(argument, "--result-capacity") == 0) {
+            unsigned maximum =
+                strcmp(argument, "--worker-threads") == 0 ? MAX_WORKER_THREADS : 4096;
+            if (parse_unsigned(value, 1, maximum, &parsed) != 0) {
+                goto invalid_number;
+            }
+            unsigned *target;
+            if (strcmp(argument, "--worker-threads") == 0) {
+                target = &options->worker_threads;
+            } else if (strcmp(argument, "--task-capacity") == 0) {
+                target = &options->task_capacity;
+            } else {
+                target = &options->result_capacity;
+            }
+            *target = parsed;
         } else {
             snprintf(error, error_size, "未知参数: %s", argument);
             return -1;
         }
         continue;
-invalid_number:
+    invalid_number:
         snprintf(error, error_size, "数值参数格式错误或超出范围: %s", argument);
         return -1;
     }
@@ -235,7 +321,11 @@ static void output_chunks_destroy(OutputChunk *chunk)
 
 static void connection_destroy(Connection *connection)
 {
-    if (connection->socket_fd >= 0) close(connection->socket_fd);
+    worker_lifetime_cancel(connection->lifetime);
+    worker_lifetime_release(connection->lifetime);
+    if (connection->socket_fd >= 0) {
+        close(connection->socket_fd);
+    }
     frame_decoder_destroy(&connection->decoder);
     output_chunks_destroy(connection->output_head);
     memset(connection, 0, sizeof(*connection));
@@ -246,20 +336,31 @@ static void remove_connection(Server *server, size_t index)
 {
     connection_destroy(&server->connections[index]);
     --server->connection_count;
-    if (index != server->connection_count) {
-        server->connections[index] = server->connections[server->connection_count];
-        memset(&server->connections[server->connection_count], 0,
-               sizeof(server->connections[server->connection_count]));
-        server->connections[server->connection_count].socket_fd = -1;
-    }
 }
 
 static size_t find_connection(const Server *server, uint64_t id)
 {
-    for (size_t index = 0; index < server->connection_count; ++index) {
-        if (server->connections[index].id == id) return index;
+    if (id < 3) {
+        return server->options.max_connections;
     }
-    return server->connection_count;
+    size_t index = (size_t)((id - 3) % server->options.max_connections);
+    if (server->connections[index].socket_fd >= 0 && server->connections[index].id == id) {
+        return index;
+    }
+    return server->options.max_connections;
+}
+
+static int update_interest(Server *server, Connection *connection)
+{
+    uint32_t interest = EPOLLIN | EPOLLRDHUP | (connection->output_head ? EPOLLOUT : 0U);
+    if (interest == connection->interest) {
+        return 0;
+    }
+    if (watch_fd(server, EPOLL_CTL_MOD, connection->socket_fd, connection->id, interest) != 0) {
+        return -1;
+    }
+    connection->interest = interest;
+    return 0;
 }
 
 static int queue_frame(Server *server, Connection *connection, Frame *frame)
@@ -275,8 +376,11 @@ static int queue_frame(Server *server, Connection *connection, Frame *frame)
         errno = ENOBUFS;
         return -1;
     }
-    if (connection->output_tail == NULL) connection->output_head = chunk;
-    else connection->output_tail->next = chunk;
+    if (connection->output_tail == NULL) {
+        connection->output_head = chunk;
+    } else {
+        connection->output_tail->next = chunk;
+    }
     connection->output_tail = chunk;
     connection->pending_bytes += chunk->length;
     return 0;
@@ -290,18 +394,39 @@ static int process_frame(Server *server, uint64_t connection_id, Connection *con
         return -1;
     }
     connection->last_request_id = request->request_id;
+    if (request->type != MESSAGE_PING && request->type >= MESSAGE_CHAT_REQUEST &&
+        request->type <= MESSAGE_AGENT_REQUEST) {
+        WorkItem item = {
+            .connection_id = connection_id,
+            .lifetime = connection->lifetime,
+            .frame = *request,
+        };
+        if (worker_pool_submit(server->workers, &item)) {
+            request->body = NULL;
+            return 0;
+        }
+        fprintf(stderr,
+                "[INFO] conn=%" PRIu64 " req=%" PRIu64 " stage=queue status=SERVER_BUSY\n",
+                connection_id,
+                request->request_id);
+        Frame busy = {0};
+        if (frame_make_error(
+                request->request_id, "SERVER_BUSY", "任务队列已满，请稍后重试。", &busy) != 0) {
+            return -1;
+        }
+        int result = queue_frame(server, connection, &busy);
+        frame_destroy(&busy);
+        return result;
+    }
     Frame response = {0};
     if (handle_fixed_request(request, &response) != 0) {
-        errno = ENOMEM;
         return -1;
     }
-    fprintf(stderr, "[INFO] conn=%" PRIu64 " req=%" PRIu64
-                    " type=%u stage=fixed_response status=%s\n",
-            connection_id, request->request_id, (unsigned)request->type,
-            response.type == MESSAGE_ERROR ? "ERROR" : "OK");
-    const int queued = queue_frame(server, connection, &response);
+    int result = queue_frame(server, connection, &response);
     frame_destroy(&response);
-    if (queued != 0) return -1;
+    if (result != 0) {
+        return -1;
+    }
     return 0;
 }
 
@@ -315,8 +440,12 @@ static int read_requests(Server *server, uint64_t connection_id, Connection *con
             return -1;
         }
         if (count < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return 0;
+            }
             return -1;
         }
         if (frame_decoder_append(&connection->decoder, bytes, (size_t)count) != 0) {
@@ -327,14 +456,18 @@ static int read_requests(Server *server, uint64_t connection_id, Connection *con
             Frame request = {0};
             const char *decode_error = NULL;
             const int decoded = frame_decoder_next(&connection->decoder, &request, &decode_error);
-            if (decoded == 0) break;
+            if (decoded == 0) {
+                break;
+            }
             if (decoded < 0) {
                 errno = EPROTO;
                 return -1;
             }
             const int processed = process_frame(server, connection_id, connection, &request);
             frame_destroy(&request);
-            if (processed != 0) return -1;
+            if (processed != 0) {
+                return -1;
+            }
         }
     }
     return 0;
@@ -347,12 +480,15 @@ static int write_responses(Connection *connection)
         OutputChunk *chunk = connection->output_head;
         const size_t remaining = chunk->length - connection->output_offset;
         const size_t to_write = remaining < budget ? remaining : budget;
-        const ssize_t count = send(connection->socket_fd,
-                                   chunk->data + connection->output_offset,
-                                   to_write, MSG_NOSIGNAL);
+        const ssize_t count = send(
+            connection->socket_fd, chunk->data + connection->output_offset, to_write, MSG_NOSIGNAL);
         if (count < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return 0;
+            }
             return -1;
         }
         if (count == 0) {
@@ -364,7 +500,9 @@ static int write_responses(Connection *connection)
         budget -= (size_t)count;
         if (connection->output_offset == chunk->length) {
             connection->output_head = chunk->next;
-            if (connection->output_head == NULL) connection->output_tail = NULL;
+            if (connection->output_head == NULL) {
+                connection->output_tail = NULL;
+            }
             free(chunk->data);
             free(chunk);
             connection->output_offset = 0;
@@ -376,35 +514,83 @@ static int write_responses(Connection *connection)
 static void accept_connections(Server *server)
 {
     for (unsigned accepted = 0; accepted < 64; ++accepted) {
-        const int client_fd = accept4(server->listener_fd, NULL, NULL,
-                                      SOCK_NONBLOCK | SOCK_CLOEXEC);
+        const int client_fd =
+            accept4(server->listener_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (client_fd < 0) {
-            if (errno == EINTR || errno == ECONNABORTED) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+            if (errno == EINTR || errno == ECONNABORTED) {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return;
+            }
             print_system_error("accept4");
             return;
         }
         if (server->connection_count >= server->options.max_connections ||
             server->next_connection_id == UINT64_MAX) {
-            fprintf(stderr, "[INFO] stage=reject reason=%s\n",
+            fprintf(stderr,
+                    "[INFO] stage=reject reason=%s\n",
                     server->connection_count >= server->options.max_connections
-                        ? "max_connections" : "connection_id_exhausted");
+                        ? "max_connections"
+                        : "connection_id_exhausted");
             close(client_fd);
             continue;
         }
-        const uint64_t id = server->next_connection_id++;
+        size_t slot = 0;
+        while (server->connections[slot].socket_fd >= 0) {
+            ++slot;
+        }
+        uint64_t id = server->next_connection_id;
+        uint64_t remainder = (id - 3) % server->options.max_connections;
+        uint64_t adjustment =
+            (slot + server->options.max_connections - remainder) % server->options.max_connections;
+        if (id > UINT64_MAX - adjustment - 1) {
+            close(client_fd);
+            return;
+        }
+        id += adjustment;
+        server->next_connection_id = id + 1;
+        WorkerLifetime *lifetime = worker_lifetime_create();
+        if (lifetime == NULL) {
+            close(client_fd);
+            return;
+        }
         if (watch_fd(server, EPOLL_CTL_ADD, client_fd, id, EPOLLIN | EPOLLRDHUP) != 0) {
+            worker_lifetime_release(lifetime);
             print_system_error("epoll_ctl(ADD client)");
             close(client_fd);
             continue;
         }
-        Connection *connection = &server->connections[server->connection_count++];
+        Connection *connection = &server->connections[slot];
+        ++server->connection_count;
         memset(connection, 0, sizeof(*connection));
         connection->socket_fd = client_fd;
         connection->id = id;
+        connection->lifetime = lifetime;
+        connection->interest = EPOLLIN | EPOLLRDHUP;
         frame_decoder_init(&connection->decoder);
         fprintf(stderr, "[INFO] conn=%" PRIu64 " stage=accept\n", id);
     }
+}
+
+static int ensure_file_limit(const Options *options)
+{
+    struct rlimit limits;
+    if (getrlimit(RLIMIT_NOFILE, &limits) != 0) {
+        return -1;
+    }
+    const rlim_t required = options->max_connections + 2U * options->worker_threads + 64U;
+    if (limits.rlim_cur >= required) {
+        return 0;
+    }
+    if (limits.rlim_max < required) {
+        fprintf(stderr, "文件描述符硬限制不足，需要至少 %ju\n", (uintmax_t)required);
+        errno = EMFILE;
+        return -1;
+    }
+    // 只提高本进程软限制，覆盖客户端、上游 HTTP 及控制描述符，不修改系统硬限制。
+    limits.rlim_cur = required;
+    return setrlimit(RLIMIT_NOFILE, &limits);
 }
 
 static int server_init(Server *server, const Options *options)
@@ -414,44 +600,136 @@ static int server_init(Server *server, const Options *options)
     server->epoll_fd = -1;
     server->signal_fd = -1;
     server->options = *options;
-    server->next_connection_id = 2;
+    server->next_connection_id = 3;
+    if (ensure_file_limit(options) != 0) {
+        return -1;
+    }
     server->connections = calloc(options->max_connections, sizeof(*server->connections));
-    if (server->connections == NULL) return -1;
+    if (server->connections == NULL) {
+        return -1;
+    }
+    for (size_t i = 0; i < options->max_connections; ++i) {
+        server->connections[i].socket_fd = -1;
+    }
     server->listener_fd = make_ipv4_socket();
-    if (server->listener_fd < 0) return -1;
+    if (server->listener_fd < 0) {
+        return -1;
+    }
     int reuse = 1;
-    if (setsockopt(server->listener_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0) return -1;
+    if (setsockopt(server->listener_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) != 0) {
+        return -1;
+    }
     struct sockaddr_in address;
-    if (set_ipv4_address(options->host, options->port, &address) != 0) return -1;
+    if (set_ipv4_address(options->host, options->port, &address) != 0) {
+        return -1;
+    }
     if (bind(server->listener_fd, (struct sockaddr *)&address, sizeof(address)) != 0 ||
-        listen(server->listener_fd, 128) != 0) return -1;
+        listen(server->listener_fd, (int)options->max_connections) != 0) {
+        return -1;
+    }
     socklen_t address_size = sizeof(address);
-    if (getsockname(server->listener_fd, (struct sockaddr *)&address, &address_size) != 0) return -1;
+    if (getsockname(server->listener_fd, (struct sockaddr *)&address, &address_size) != 0) {
+        return -1;
+    }
     server->options.port = ntohs(address.sin_port);
 
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGINT);
     sigaddset(&mask, SIGTERM);
-    if (sigprocmask(SIG_BLOCK, &mask, NULL) != 0) return -1;
+    if (sigprocmask(SIG_BLOCK, &mask, NULL) != 0) {
+        return -1;
+    }
     server->signal_fd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
-    if (server->signal_fd < 0) return -1;
+    if (server->signal_fd < 0) {
+        return -1;
+    }
+    if (agent_http_configure(options->agent_url, options->agent_timeout_ms) != 0) {
+        return -1;
+    }
+    server->workers = worker_pool_create(
+        options->worker_threads, options->task_capacity, options->result_capacity,
+        options->agent_timeout_ms);
+    if (!server->workers) {
+        return -1;
+    }
     server->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
-    if (server->epoll_fd < 0) return -1;
+    if (server->epoll_fd < 0) {
+        return -1;
+    }
     if (watch_fd(server, EPOLL_CTL_ADD, server->listener_fd, 0, EPOLLIN) != 0 ||
-        watch_fd(server, EPOLL_CTL_ADD, server->signal_fd, 1, EPOLLIN) != 0) return -1;
+        watch_fd(server, EPOLL_CTL_ADD, server->signal_fd, 1, EPOLLIN) != 0 ||
+        watch_fd(server, EPOLL_CTL_ADD, worker_pool_event_fd(server->workers), 2, EPOLLIN) != 0) {
+        return -1;
+    }
     return 0;
 }
 
 static void server_destroy(Server *server)
 {
-    for (size_t index = 0; index < server->connection_count; ++index) {
-        connection_destroy(&server->connections[index]);
+    for (size_t index = 0; server->connections && index < server->options.max_connections;
+         ++index) {
+        if (server->connections[index].socket_fd >= 0) {
+            connection_destroy(&server->connections[index]);
+        }
     }
+    worker_pool_destroy(server->workers);
     free(server->connections);
-    if (server->listener_fd >= 0) close(server->listener_fd);
-    if (server->epoll_fd >= 0) close(server->epoll_fd);
-    if (server->signal_fd >= 0) close(server->signal_fd);
+    if (server->listener_fd >= 0) {
+        close(server->listener_fd);
+    }
+    if (server->epoll_fd >= 0) {
+        close(server->epoll_fd);
+    }
+    if (server->signal_fd >= 0) {
+        close(server->signal_fd);
+    }
+}
+
+static int process_completions(Server *server)
+{
+    uint64_t count;
+    int fd = worker_pool_event_fd(server->workers);
+    ssize_t n;
+    do {
+        n = read(fd, &count, sizeof(count));
+    } while (n < 0 && errno == EINTR);
+    if (n < 0 && errno != EAGAIN) {
+        return -1;
+    }
+    for (unsigned i = 0; i < 64; ++i) {
+        WorkItem item;
+        if (!worker_pool_take(server->workers, &item)) {
+            break;
+        }
+        size_t index = find_connection(server, item.connection_id);
+        if (index == server->options.max_connections) {
+            fprintf(stderr,
+                    "[INFO] conn=%" PRIu64 " req=%" PRIu64 " stage=discard reason=disconnect\n",
+                    item.connection_id,
+                    item.frame.request_id);
+        } else {
+            Connection *connection = &server->connections[index];
+            if (item.frame.body == NULL || queue_frame(server, connection, &item.frame) != 0 ||
+                update_interest(server, connection) != 0) {
+                fprintf(stderr,
+                        "[INFO] conn=%" PRIu64 " stage=close reason=发送缓冲达到上限或响应失败\n",
+                        item.connection_id);
+                remove_connection(server, index);
+            }
+        }
+        frame_destroy(&item.frame);
+    }
+    if (worker_pool_has_results(server->workers)) {
+        uint64_t one = 1;
+        do {
+            n = write(fd, &one, sizeof(one));
+        } while (n < 0 && errno == EINTR);
+        if (n < 0 && errno != EAGAIN) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int server_run(Server *server)
@@ -462,39 +740,62 @@ static int server_run(Server *server)
     while (true) {
         const int event_count = epoll_wait(server->epoll_fd, events, 64, -1);
         if (event_count < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR) {
+                continue;
+            }
             return -1;
         }
         for (int event_index = 0; event_index < event_count; ++event_index) {
             const uint64_t id = events[event_index].data.u64;
             if (id == 1) {
-                fprintf(stderr, "[INFO] stage=shutdown connections=%zu\n", server->connection_count);
+                fprintf(
+                    stderr, "[INFO] stage=shutdown connections=%zu\n", server->connection_count);
                 return 0;
+            }
+            if (id == 2) {
+                if (process_completions(server) != 0) {
+                    return -1;
+                }
+                continue;
             }
             if (id == 0) {
                 accept_connections(server);
                 continue;
             }
             const size_t connection_index = find_connection(server, id);
-            if (connection_index == server->connection_count) continue;
+            if (connection_index == server->options.max_connections) {
+                continue;
+            }
             Connection *connection = &server->connections[connection_index];
             const uint32_t flags = events[event_index].events;
             int failed = (flags & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) != 0;
-            if (failed) errno = ECONNRESET;
-            if (!failed && (flags & EPOLLIN) != 0 &&
-                read_requests(server, id, connection) != 0) failed = 1;
-            if (!failed && (flags & EPOLLOUT) != 0 && write_responses(connection) != 0) failed = 1;
+            if (failed) {
+                errno = ECONNRESET;
+            }
+            if (!failed && (flags & EPOLLIN) != 0 && read_requests(server, id, connection) != 0) {
+                failed = 1;
+            }
+            // 网络线程刚生成的 PONG 或拒绝响应可立即尝试发送，EAGAIN 时再等待 EPOLLOUT。
+            if (!failed && connection->output_head != NULL && write_responses(connection) != 0) {
+                failed = 1;
+            }
             if (!failed) {
-                const uint32_t interest = EPOLLIN | EPOLLRDHUP |
-                    (connection->output_head == NULL ? 0U : EPOLLOUT);
-                if (watch_fd(server, EPOLL_CTL_MOD, connection->socket_fd, id, interest) != 0) failed = 1;
+                if (update_interest(server, connection) != 0) {
+                    failed = 1;
+                }
             }
             if (failed) {
-                const char *reason = errno == ENOBUFS ? "发送缓冲达到上限" :
-                    (errno == EPROTO ? "协议帧或request_id非法" :
-                     (errno == ECONNRESET ? "连接断开" : strerror(errno == 0 ? ECONNRESET : errno)));
-                fprintf(stderr, "[INFO] conn=%" PRIu64 " stage=close reason=%s\n",
-                        id, reason);
+                const char *reason;
+                if (errno == ENOBUFS) {
+                    reason = "发送缓冲达到上限";
+                } else if (errno == EPROTO) {
+                    reason = "协议帧或request_id非法";
+                } else if (errno == ECONNRESET) {
+                    reason = "连接断开";
+                } else {
+                    reason = strerror(errno == 0 ? ECONNRESET : errno);
+                }
+                fprintf(stderr, "[INFO] conn=%" PRIu64 " stage=close reason=%s\n", id, reason);
                 remove_connection(server, connection_index);
             }
         }
@@ -505,7 +806,8 @@ int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         puts("agent-server [--config PATH] [--host IPv4] [--port 0..65535]\n"
-             "             [--max-connections N] [--max-pending-bytes N]");
+             "             [--max-connections N] [--max-pending-bytes N]\n"
+             "             [--worker-threads N] [--task-capacity N] [--result-capacity N]");
         return 0;
     }
     Options options;
@@ -521,7 +823,9 @@ int main(int argc, char **argv)
         return 1;
     }
     const int result = server_run(&server);
-    if (result != 0) print_system_error("agent-server");
+    if (result != 0) {
+        print_system_error("agent-server");
+    }
     server_destroy(&server);
     return result == 0 ? 0 : 1;
 }

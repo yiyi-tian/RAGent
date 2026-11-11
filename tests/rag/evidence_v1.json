@@ -1,0 +1,487 @@
+{
+  "version": "linux-manual-evidence-v1",
+  "snapshot_sha256": "a202e18370e667575ab16f1914f661512e6bf5c8739257a9cbc7c643a495322c",
+  "description": "证据标注针对首版快照；每个受支持问题列出人工核对过的一个或多个可用分块，非穷尽标注。",
+  "cases": [
+    {
+      "id": "passwd-01",
+      "query": "如何修改用户登录密码？",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "fa882c12-3ef6-5926-84b7-7390a69fc2df"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "passwd-02",
+      "query": "如何锁定用户密码，禁止通过密码登录？",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "4cba52e7-77f9-580c-9b93-95a3707179f1"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "passwd-03",
+      "query": "passwd 命令如何查看密码状态？",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "c4de7d5b-c2d4-553f-a16e-91afcac54669"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "man-01",
+      "query": "怎么用 man 查看命令的帮助手册？",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "78886322-f13e-576d-b344-34268b4c1eef"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "man-02",
+      "query": "如何指定 man 手册的章节号？",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "78886322-f13e-576d-b344-34268b4c1eef",
+        "432bb67c-25fc-57e2-ae58-e430e618c62c"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "man-03",
+      "query": "man 命令有哪些退出状态？",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "fb5d556f-fb3b-52af-b8f1-34c69fa8aa92"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "ls-01",
+      "query": "如何列出目录中的文件？",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "bca115da-6010-58d1-a20f-4f2328c14570"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "ls-02",
+      "query": "ls 如何显示隐藏文件？",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "cff112e7-c7fe-5e13-ad31-299fbc293a7f"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "ls-03",
+      "query": "用什么选项让 ls 显示文件的详细信息？",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "9d945e68-7701-55ce-9f52-ead1e63e287e"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "grep-01",
+      "query": "如何在文件里查找匹配某个模式的行？",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "42454967-725b-517b-b8a3-6c9dd2945c64"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "grep-02",
+      "query": "grep 怎么忽略大小写搜索文本？",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "444ea9d9-f895-5bd0-baf2-8b5337678634"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "grep-03",
+      "query": "grep 的退出状态 0、1、2 分别表示什么？",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "808cd408-2727-5d9a-91d5-6afa475a96bc"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "chmod-01",
+      "query": "如何用 chmod 修改文件权限？",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "c79e03bc-5ec1-5f84-a767-863c173a0fda"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "chmod-02",
+      "query": "chmod 如何递归修改目录及其内容的权限？",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "ba16746c-fd8c-5a51-af22-024021d87f59"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "chmod-03",
+      "query": "chmod 手册里的粘滞位是什么？",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "01d56051-9611-59b5-b9b4-cbbb885a4144"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "ps-01",
+      "query": "怎样使用 ps 查看正在运行的进程？",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "0e4888b9-b211-59f7-886c-2f9df67855b1"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "ps-02",
+      "query": "ps 输出里的进程状态码表示什么？",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "daf986b6-49d6-50c4-a717-4d6cb48dce14"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "ps-03",
+      "query": "ps 命令如何自定义进程信息的输出格式？",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "7e40203f-e502-5708-93e7-9a9194cb3672"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "gpasswd-01",
+      "query": "如何把用户加入一个组？",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "f4192a7b-6619-5f1c-9270-ecab1f882af6"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "gpasswd-02",
+      "query": "gpasswd 如何从用户组中删除某个成员？",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "f4192a7b-6619-5f1c-9270-ecab1f882af6"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "gpasswd-03",
+      "query": "gpasswd 管理组密码时涉及哪些文件？",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "9b2b27df-d697-56db-8129-92a9bb3c14ad"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "systemctl-01",
+      "query": "如何使用 systemctl 启动系统服务？",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "05eb7173-cce6-5aca-9d15-14daa0213014"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "systemctl-02",
+      "query": "怎么用 systemctl 查看某个服务的状态？",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [
+        "0139865e-42ce-54d0-b116-45396f2a0fed"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "systemctl-03",
+      "query": "systemctl 如何设置服务开机启动？",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "split": "development",
+      "evidence_ids": [],
+      "evidence_status": "fragmented",
+      "annotation_note": "enable 用法与开机效果分处不同分块，当前不标为单块可完整作答。"
+    },
+    {
+      "id": "outside-01",
+      "query": "如何用 Docker 构建容器镜像？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "outside-02",
+      "query": "如何使用 ssh 生成公钥并连接远程主机？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "outside-03",
+      "query": "怎么用 git 创建并合并分支？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "outside-04",
+      "query": "如何在 Python 中安装第三方依赖？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "outside-05",
+      "query": "TCP 三次握手的具体过程是什么？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "outside-06",
+      "query": "月球为什么会出现月相变化？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "outside-07",
+      "query": "如何制作番茄炒蛋？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "outside-08",
+      "query": "牛顿第二定律的公式是什么？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "holdout-passwd",
+      "query": "passwd 的哪个选项可以删除用户的密码？",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "split": "validation",
+      "evidence_ids": [
+        "4cba52e7-77f9-580c-9b93-95a3707179f1"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "holdout-man",
+      "query": "如何通过 MANSECT 环境变量设置手册章节搜索顺序？",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "split": "validation",
+      "evidence_ids": [
+        "e8691d2f-98a3-5664-8456-bfe5cf8d46f4"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "holdout-ls",
+      "query": "ls 如何以 K、M、G 形式显示文件大小？",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "split": "validation",
+      "evidence_ids": [
+        "c274f98f-feae-5e68-bea4-42f08ae0b69c"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "holdout-grep",
+      "query": "grep 如何选择不匹配指定模式的行？",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "split": "validation",
+      "evidence_ids": [
+        "9db66bda-4503-5436-9c92-78393baf40c3"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "holdout-chmod",
+      "query": "如何让 chmod 参照另一个文件设置权限？",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "split": "validation",
+      "evidence_ids": [
+        "ba16746c-fd8c-5a51-af22-024021d87f59"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "holdout-ps",
+      "query": "ps 如何按 PID 选择进程？",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "split": "validation",
+      "evidence_ids": [
+        "2caf8a99-9bc3-593c-84e2-d4afd399066b"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "holdout-gpasswd",
+      "query": "gpasswd 如何设置组管理员？",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "split": "validation",
+      "evidence_ids": [
+        "f4192a7b-6619-5f1c-9270-ecab1f882af6"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "holdout-systemctl",
+      "query": "systemctl 怎样只列出失败的单元？",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "split": "validation",
+      "evidence_ids": [
+        "dd6e03ae-11f7-52c6-8a3e-f5bd3fb76e46"
+      ],
+      "evidence_status": "supported"
+    },
+    {
+      "id": "holdout-unknown-01",
+      "query": "如何用 kubectl 查看 Kubernetes 集群中的 Pod？",
+      "expected_sources": [],
+      "split": "validation",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "holdout-unknown-02",
+      "query": "如何使用 nginx 配置反向代理？",
+      "expected_sources": [],
+      "split": "validation",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "holdout-unknown-03",
+      "query": "如何用 SQL 创建数据库索引？",
+      "expected_sources": [],
+      "split": "validation",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    },
+    {
+      "id": "holdout-unknown-04",
+      "query": "Linux 的 epoll_wait 系统调用参数是什么？",
+      "expected_sources": [],
+      "split": "validation",
+      "evidence_ids": [],
+      "evidence_status": "insufficient"
+    }
+  ]
+}

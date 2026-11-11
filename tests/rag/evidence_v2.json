@@ -1,0 +1,925 @@
+{
+  "version": "linux-manual-evidence-spans-v2",
+  "description": "在候选检索前冻结；原44题及新12题。证据按相同原文的字符位置标注，不依赖分块ID。Hit@5要求五块合计覆盖全部标注事实；负例只人工审查回答，不计算正例命中率。",
+  "cases": [
+    {
+      "id": "passwd-01",
+      "query": "如何修改用户登录密码？",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "passwd(1)",
+          "document_sha256": "a482b043563ad4a284114f4138207f2c253bfcd5bdb0736aeca76b13f41345d0",
+          "start": 142,
+          "end": 197,
+          "quote": "The passwd command changes passwords for user accounts."
+        }
+      ]
+    },
+    {
+      "id": "passwd-02",
+      "query": "如何锁定用户密码，禁止通过密码登录？",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "passwd(1)",
+          "document_sha256": "a482b043563ad4a284114f4138207f2c253bfcd5bdb0736aeca76b13f41345d0",
+          "start": 2484,
+          "end": 2516,
+          "quote": "-l, --lock\n           锁定指定账户的密码。"
+        },
+        {
+          "source": "passwd(1)",
+          "document_sha256": "a482b043563ad4a284114f4138207f2c253bfcd5bdb0736aeca76b13f41345d0",
+          "start": 2584,
+          "end": 2628,
+          "quote": "Note that this does not disable the account."
+        }
+      ]
+    },
+    {
+      "id": "passwd-03",
+      "query": "passwd 命令如何查看密码状态？",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "passwd(1)",
+          "document_sha256": "a482b043563ad4a284114f4138207f2c253bfcd5bdb0736aeca76b13f41345d0",
+          "start": 3471,
+          "end": 3504,
+          "quote": "-S, --status\n           显示账户状态信息。"
+        }
+      ]
+    },
+    {
+      "id": "man-01",
+      "query": "怎么用 man 查看命令的帮助手册？",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 320,
+          "end": 336,
+          "quote": "man  是系统的手册分页程序。"
+        }
+      ]
+    },
+    {
+      "id": "man-02",
+      "query": "如何指定 man 手册的章节号？",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 390,
+          "end": 427,
+          "quote": "如果指定了 章节，man  将只在手册\n       的指定 章节 搜索。"
+        }
+      ]
+    },
+    {
+      "id": "man-03",
+      "query": "man 命令有哪些退出状态？",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 13490,
+          "end": 13504,
+          "quote": "0      程序成功执行。"
+        },
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 13513,
+          "end": 13533,
+          "quote": "1      用法、语法或配置文件出错。"
+        },
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 13542,
+          "end": 13554,
+          "quote": "2      操作出错。"
+        },
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 13563,
+          "end": 13585,
+          "quote": "3      子进程返回了非零的退出状态码。"
+        },
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 13594,
+          "end": 13623,
+          "quote": "16     至少有一个页面/文件/关键词不存在或不匹配。"
+        }
+      ]
+    },
+    {
+      "id": "ls-01",
+      "query": "如何列出目录中的文件？",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "ls(1)",
+          "document_sha256": "4230aa9967832b46d617283595ed5b55460937bf5fa23497b79ac8304c385bb2",
+          "start": 92,
+          "end": 120,
+          "quote": "ls - list directory contents"
+        }
+      ]
+    },
+    {
+      "id": "ls-02",
+      "query": "ls 如何显示隐藏文件？",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "ls(1)",
+          "document_sha256": "4230aa9967832b46d617283595ed5b55460937bf5fa23497b79ac8304c385bb2",
+          "start": 447,
+          "end": 508,
+          "quote": "-a, --all\n              do not ignore entries starting with ."
+        }
+      ]
+    },
+    {
+      "id": "ls-03",
+      "query": "用什么选项让 ls 显示文件的详细信息？",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "ls(1)",
+          "document_sha256": "4230aa9967832b46d617283595ed5b55460937bf5fa23497b79ac8304c385bb2",
+          "start": 3284,
+          "end": 3316,
+          "quote": "-l     use a long listing format"
+        }
+      ]
+    },
+    {
+      "id": "grep-01",
+      "query": "如何在文件里查找匹配某个模式的行？",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "grep(1)",
+          "document_sha256": "bd1875d0a241e7bb668b8bc18052590e82f0fd76480dfa98582124f57260ff43",
+          "start": 329,
+          "end": 375,
+          "quote": "grep  searches  for  PATTERNS  in  each  FILE."
+        }
+      ]
+    },
+    {
+      "id": "grep-02",
+      "query": "grep 怎么忽略大小写搜索文本？",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "grep(1)",
+          "document_sha256": "bd1875d0a241e7bb668b8bc18052590e82f0fd76480dfa98582124f57260ff43",
+          "start": 2801,
+          "end": 2889,
+          "quote": "-i, --ignore-case\n              Ignore  case  distinctions  in  patterns and input data,"
+        }
+      ]
+    },
+    {
+      "id": "grep-03",
+      "query": "grep 的退出状态 0、1、2 分别表示什么？",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "grep(1)",
+          "document_sha256": "bd1875d0a241e7bb668b8bc18052590e82f0fd76480dfa98582124f57260ff43",
+          "start": 23328,
+          "end": 23444,
+          "quote": "Normally the exit status is 0 if a line is selected, 1 if no lines were\n       selected, and 2 if an error occurred."
+        }
+      ]
+    },
+    {
+      "id": "chmod-01",
+      "query": "如何用 chmod 修改文件权限？",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "chmod(1)",
+          "document_sha256": "da1bffde7f9988f01d729396c2ea50cc60ba702170105b5f25a94e0e51f88b9c",
+          "start": 92,
+          "end": 121,
+          "quote": "chmod - change file mode bits"
+        }
+      ]
+    },
+    {
+      "id": "chmod-02",
+      "query": "chmod 如何递归修改目录及其内容的权限？",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "chmod(1)",
+          "document_sha256": "da1bffde7f9988f01d729396c2ea50cc60ba702170105b5f25a94e0e51f88b9c",
+          "start": 5643,
+          "end": 5713,
+          "quote": "-R, --recursive\n              change files and directories recursively"
+        }
+      ]
+    },
+    {
+      "id": "chmod-03",
+      "query": "chmod 手册里的粘滞位是什么？",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "chmod(1)",
+          "document_sha256": "da1bffde7f9988f01d729396c2ea50cc60ba702170105b5f25a94e0e51f88b9c",
+          "start": 4467,
+          "end": 4609,
+          "quote": "it  prevents\n       unprivileged  users  from  removing or renaming a file in the directory\n       unless they own the file or the  directory;"
+        }
+      ]
+    },
+    {
+      "id": "ps-01",
+      "query": "怎样使用 ps 查看正在运行的进程？",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 92,
+          "end": 140,
+          "quote": "ps - report a snapshot of the current processes."
+        }
+      ]
+    },
+    {
+      "id": "ps-02",
+      "query": "ps 输出里的进程状态码表示什么？",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 23381,
+          "end": 23420,
+          "quote": "D    uninterruptible sleep (usually IO)"
+        },
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 23475,
+          "end": 23514,
+          "quote": "R    running or runnable (on run queue)"
+        },
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 23530,
+          "end": 23589,
+          "quote": "S    interruptible sleep (waiting for an event to complete)"
+        },
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 23825,
+          "end": 23919,
+          "quote": "Z    defunct (\"zombie\") process, terminated but not  reaped  by\n                    its parent"
+        }
+      ]
+    },
+    {
+      "id": "ps-03",
+      "query": "ps 命令如何自定义进程信息的输出格式？",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 12246,
+          "end": 12320,
+          "quote": "--format format\n              user-defined format.  Identical to -o and o."
+        }
+      ]
+    },
+    {
+      "id": "gpasswd-01",
+      "query": "如何把用户加入一个组？",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "gpasswd(1)",
+          "document_sha256": "1075f53ff7bc2a1d21902f21ff7bc27d2e6b710f4d4bf32c7fd111d41f44e14b",
+          "start": 1141,
+          "end": 1199,
+          "quote": "-a, --add user\n           Add the user to the named group."
+        }
+      ]
+    },
+    {
+      "id": "gpasswd-02",
+      "query": "gpasswd 如何从用户组中删除某个成员？",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "gpasswd(1)",
+          "document_sha256": "1075f53ff7bc2a1d21902f21ff7bc27d2e6b710f4d4bf32c7fd111d41f44e14b",
+          "start": 1208,
+          "end": 1274,
+          "quote": "-d, --delete user\n           Remove the user from the named group."
+        }
+      ]
+    },
+    {
+      "id": "gpasswd-03",
+      "query": "gpasswd 管理组密码时涉及哪些文件？",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "gpasswd(1)",
+          "document_sha256": "1075f53ff7bc2a1d21902f21ff7bc27d2e6b710f4d4bf32c7fd111d41f44e14b",
+          "start": 2383,
+          "end": 2411,
+          "quote": "/etc/group\n           组账户信息。"
+        },
+        {
+          "source": "gpasswd(1)",
+          "document_sha256": "1075f53ff7bc2a1d21902f21ff7bc27d2e6b710f4d4bf32c7fd111d41f44e14b",
+          "start": 2420,
+          "end": 2452,
+          "quote": "/etc/gshadow\n           安全组账户信息。"
+        }
+      ]
+    },
+    {
+      "id": "systemctl-01",
+      "query": "如何使用 systemctl 启动系统服务？",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "systemctl(1)",
+          "document_sha256": "fe2b4d027d40f3103718aabc496a63b8f11e08b08c288886e33976c549bc5250",
+          "start": 17137,
+          "end": 17230,
+          "quote": "start PATTERN...\n           Start (activate) one or more units specified on the command line."
+        }
+      ]
+    },
+    {
+      "id": "systemctl-02",
+      "query": "怎么用 systemctl 查看某个服务的状态？",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "split": "development",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "systemctl(1)",
+          "document_sha256": "fe2b4d027d40f3103718aabc496a63b8f11e08b08c288886e33976c549bc5250",
+          "start": 10710,
+          "end": 10738,
+          "quote": "$ systemctl status bluetooth"
+        }
+      ]
+    },
+    {
+      "id": "systemctl-03",
+      "query": "systemctl 如何设置服务开机启动？",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "split": "development",
+      "evidence_status": "fragmented",
+      "annotation_note": "enable 用法与开机效果分处不同分块，当前不标为单块可完整作答。",
+      "evidence": [
+        {
+          "source": "systemctl(1)",
+          "document_sha256": "fe2b4d027d40f3103718aabc496a63b8f11e08b08c288886e33976c549bc5250",
+          "start": 33412,
+          "end": 33497,
+          "quote": "enable UNIT..., enable PATH...\n           Enable one or more units or unit instances."
+        },
+        {
+          "source": "systemctl(1)",
+          "document_sha256": "fe2b4d027d40f3103718aabc496a63b8f11e08b08c288886e33976c549bc5250",
+          "start": 36528,
+          "end": 36588,
+          "quote": "so that the unit is automatically\n           started on boot"
+        }
+      ]
+    },
+    {
+      "id": "outside-01",
+      "query": "如何用 Docker 构建容器镜像？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "outside-02",
+      "query": "如何使用 ssh 生成公钥并连接远程主机？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "outside-03",
+      "query": "怎么用 git 创建并合并分支？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "outside-04",
+      "query": "如何在 Python 中安装第三方依赖？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "outside-05",
+      "query": "TCP 三次握手的具体过程是什么？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "outside-06",
+      "query": "月球为什么会出现月相变化？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "outside-07",
+      "query": "如何制作番茄炒蛋？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "outside-08",
+      "query": "牛顿第二定律的公式是什么？",
+      "expected_sources": [],
+      "split": "development",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "holdout-passwd",
+      "query": "passwd 的哪个选项可以删除用户的密码？",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "split": "validation",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "passwd(1)",
+          "document_sha256": "a482b043563ad4a284114f4138207f2c253bfcd5bdb0736aeca76b13f41345d0",
+          "start": 1911,
+          "end": 1948,
+          "quote": "-d, --delete\n           删除用户密码(让它为空)。"
+        }
+      ]
+    },
+    {
+      "id": "holdout-man",
+      "query": "如何通过 MANSECT 环境变量设置手册章节搜索顺序？",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "split": "validation",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 14002,
+          "end": 14087,
+          "quote": "MANSECT\n              如果设置了  $MANSECT，它的值(以冒号分隔的章节列表)会用于确定搜索\n              哪些章节及搜索顺序。"
+        }
+      ]
+    },
+    {
+      "id": "holdout-ls",
+      "query": "ls 如何以 K、M、G 形式显示文件大小？",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "split": "validation",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "ls(1)",
+          "document_sha256": "4230aa9967832b46d617283595ed5b55460937bf5fa23497b79ac8304c385bb2",
+          "start": 2200,
+          "end": 2283,
+          "quote": "-h, --human-readable\n              with -l and -s, print sizes like 1K 234M 2G etc."
+        }
+      ]
+    },
+    {
+      "id": "holdout-grep",
+      "query": "grep 如何选择不匹配指定模式的行？",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "split": "validation",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "grep(1)",
+          "document_sha256": "bd1875d0a241e7bb668b8bc18052590e82f0fd76480dfa98582124f57260ff43",
+          "start": 3283,
+          "end": 3375,
+          "quote": "-v, --invert-match\n              Invert the sense of matching, to select non-matching lines."
+        }
+      ]
+    },
+    {
+      "id": "holdout-chmod",
+      "query": "如何让 chmod 参照另一个文件设置权限？",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "split": "validation",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "chmod(1)",
+          "document_sha256": "da1bffde7f9988f01d729396c2ea50cc60ba702170105b5f25a94e0e51f88b9c",
+          "start": 5484,
+          "end": 5570,
+          "quote": "--reference=RFILE\n              use  RFILE's  mode  instead of specifying MODE values."
+        }
+      ]
+    },
+    {
+      "id": "holdout-ps",
+      "query": "ps 如何按 PID 选择进程？",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "split": "validation",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 8009,
+          "end": 8048,
+          "quote": "-p pidlist\n              Select by PID."
+        }
+      ]
+    },
+    {
+      "id": "holdout-gpasswd",
+      "query": "gpasswd 如何设置组管理员？",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "split": "validation",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "gpasswd(1)",
+          "document_sha256": "1075f53ff7bc2a1d21902f21ff7bc27d2e6b710f4d4bf32c7fd111d41f44e14b",
+          "start": 1960,
+          "end": 2014,
+          "quote": "-A, --administrators user,...\n           设置有管理权限的用户列表。"
+        }
+      ]
+    },
+    {
+      "id": "holdout-systemctl",
+      "query": "systemctl 怎样只列出失败的单元？",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "split": "validation",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "systemctl(1)",
+          "document_sha256": "fe2b4d027d40f3103718aabc496a63b8f11e08b08c288886e33976c549bc5250",
+          "start": 89829,
+          "end": 89914,
+          "quote": "--failed\n           List units in failed state. This is equivalent to --state=failed."
+        }
+      ]
+    },
+    {
+      "id": "holdout-unknown-01",
+      "query": "如何用 kubectl 查看 Kubernetes 集群中的 Pod？",
+      "expected_sources": [],
+      "split": "validation",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "holdout-unknown-02",
+      "query": "如何使用 nginx 配置反向代理？",
+      "expected_sources": [],
+      "split": "validation",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "holdout-unknown-03",
+      "query": "如何用 SQL 创建数据库索引？",
+      "expected_sources": [],
+      "split": "validation",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "holdout-unknown-04",
+      "query": "Linux 的 epoll_wait 系统调用参数是什么？",
+      "expected_sources": [],
+      "split": "validation",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "new-passwd",
+      "query": "passwd 如何设置密码的最大有效天数？",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "split": "holdout",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "passwd(1)",
+          "document_sha256": "a482b043563ad4a284114f4138207f2c253bfcd5bdb0736aeca76b13f41345d0",
+          "start": 4194,
+          "end": 4284,
+          "quote": "-x, --maxdays MAX_DAYS\n           Set the maximum number of days a password remains valid."
+        }
+      ]
+    },
+    {
+      "id": "new-man",
+      "query": "man 如何只打印手册源文件的位置而不显示内容？",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "split": "holdout",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 5685,
+          "end": 5764,
+          "quote": "-w, --where, --path, --location\n              不实际显示手册页，但打印将被格式化的源 nroff  文件的位置。"
+        }
+      ]
+    },
+    {
+      "id": "new-ls",
+      "query": "ls 如何按时间排序并把最新文件放在前面？",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "split": "holdout",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "ls(1)",
+          "document_sha256": "4230aa9967832b46d617283595ed5b55460937bf5fa23497b79ac8304c385bb2",
+          "start": 5377,
+          "end": 5422,
+          "quote": "-t     sort by time, newest first; see --time"
+        }
+      ]
+    },
+    {
+      "id": "new-grep",
+      "query": "grep 如何在每条输出前显示从 1 开始的行号？",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "split": "holdout",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "grep(1)",
+          "document_sha256": "bd1875d0a241e7bb668b8bc18052590e82f0fd76480dfa98582124f57260ff43",
+          "start": 7945,
+          "end": 8071,
+          "quote": "-n, --line-number\n              Prefix each line of output with the 1-based line  number  within\n              its input file."
+        }
+      ]
+    },
+    {
+      "id": "new-chmod",
+      "query": "chmod 如何为每一个处理过的文件打印诊断信息？",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "split": "holdout",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "chmod(1)",
+          "document_sha256": "da1bffde7f9988f01d729396c2ea50cc60ba702170105b5f25a94e0e51f88b9c",
+          "start": 5248,
+          "end": 5320,
+          "quote": "-v, --verbose\n              output a diagnostic for every file processed"
+        }
+      ]
+    },
+    {
+      "id": "new-ps",
+      "query": "ps 如何选择全部进程？",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "split": "holdout",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 4472,
+          "end": 4518,
+          "quote": "-e     Select all processes.  Identical to -A."
+        }
+      ]
+    },
+    {
+      "id": "new-gpasswd",
+      "query": "gpasswd 如何一次设置组成员列表？",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "split": "holdout",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "gpasswd(1)",
+          "document_sha256": "1075f53ff7bc2a1d21902f21ff7bc27d2e6b710f4d4bf32c7fd111d41f44e14b",
+          "start": 2023,
+          "end": 2065,
+          "quote": "-M, --members user,...\n           设置组成员列表。"
+        }
+      ]
+    },
+    {
+      "id": "new-systemctl",
+      "query": "systemctl 如何检查指定服务是否正在运行？",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "split": "holdout",
+      "evidence_status": "supported",
+      "evidence": [
+        {
+          "source": "systemctl(1)",
+          "document_sha256": "fe2b4d027d40f3103718aabc496a63b8f11e08b08c288886e33976c549bc5250",
+          "start": 7620,
+          "end": 7719,
+          "quote": "is-active PATTERN...\n           Check whether any of the specified units are active (i.e. running)."
+        }
+      ]
+    },
+    {
+      "id": "new-outside-1",
+      "query": "如何用 tar 压缩并解压目录？",
+      "expected_sources": [],
+      "split": "holdout",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "new-outside-2",
+      "query": "如何用 ip 设置网络路由？",
+      "expected_sources": [],
+      "split": "holdout",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "new-outside-3",
+      "query": "如何用 journalctl 查看系统日志？",
+      "expected_sources": [],
+      "split": "holdout",
+      "evidence_status": "insufficient",
+      "evidence": []
+    },
+    {
+      "id": "new-outside-4",
+      "query": "如何用 pip 发布 Python 包？",
+      "expected_sources": [],
+      "split": "holdout",
+      "evidence_status": "insufficient",
+      "evidence": []
+    }
+  ]
+}

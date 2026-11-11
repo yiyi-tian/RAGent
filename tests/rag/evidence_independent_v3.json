@@ -1,0 +1,182 @@
+{
+  "version": "linux-manual-independent-v3",
+  "description": "在本轮检索实验前固定；不参与策略或参数选择，仅作最终一次独立验收。",
+  "cases": [
+    {
+      "id": "independent-passwd",
+      "query": "passwd 如何强制用户在下次登录时更改密码？",
+      "split": "independent",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "passwd(1)"
+      ],
+      "evidence": [
+        {
+          "source": "passwd(1)",
+          "document_sha256": "a482b043563ad4a284114f4138207f2c253bfcd5bdb0736aeca76b13f41345d0",
+          "start": 1997,
+          "end": 2053,
+          "quote": "-e, --expire\n           让一个账户的密码立即过期。这可以强制一个用户下次登录时更改密码。"
+        }
+      ]
+    },
+    {
+      "id": "independent-man",
+      "query": "man 如何根据关键词搜索手册的简短描述？",
+      "split": "independent",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "man(1)"
+      ],
+      "evidence": [
+        {
+          "source": "man(1)",
+          "document_sha256": "bdc4ae4ab8290bece1de78d1f6fe87cc589051ff9d5acdd8b109774bc780ee60",
+          "start": 4984,
+          "end": 5067,
+          "quote": "-k, --apropos\n              大约等同于     apropos。搜索关键词对应的手册概述并显示所有匹配结\n              果。"
+        }
+      ]
+    },
+    {
+      "id": "independent-ls",
+      "query": "ls 怎样把排序顺序反过来？",
+      "split": "independent",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "ls(1)"
+      ],
+      "evidence": [
+        {
+          "source": "ls(1)",
+          "document_sha256": "4230aa9967832b46d617283595ed5b55460937bf5fa23497b79ac8304c385bb2",
+          "start": 4461,
+          "end": 4516,
+          "quote": "-r, --reverse\n              reverse order while sorting"
+        }
+      ]
+    },
+    {
+      "id": "independent-grep",
+      "query": "grep 怎样将模式按固定字符串处理，而不是正则表达式？",
+      "split": "independent",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "grep(1)"
+      ],
+      "evidence": [
+        {
+          "source": "grep(1)",
+          "document_sha256": "bd1875d0a241e7bb668b8bc18052590e82f0fd76480dfa98582124f57260ff43",
+          "start": 1541,
+          "end": 1636,
+          "quote": "-F, --fixed-strings\n              Interpret PATTERNS as fixed strings, not regular expressions."
+        }
+      ]
+    },
+    {
+      "id": "independent-chmod",
+      "query": "chmod 能否只在权限确实变化时输出信息？",
+      "split": "independent",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "chmod(1)"
+      ],
+      "evidence": [
+        {
+          "source": "chmod(1)",
+          "document_sha256": "da1bffde7f9988f01d729396c2ea50cc60ba702170105b5f25a94e0e51f88b9c",
+          "start": 5088,
+          "end": 5166,
+          "quote": "-c, --changes\n              like verbose but report only when a change is made"
+        }
+      ]
+    },
+    {
+      "id": "independent-ps",
+      "query": "ps 如何找出指定父进程创建的子进程？",
+      "split": "independent",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "ps(1)"
+      ],
+      "evidence": [
+        {
+          "source": "ps(1)",
+          "document_sha256": "fd9293e928d87009100131684a1f7816c9151420300744bbc684b49bca0ae71e",
+          "start": 8257,
+          "end": 8315,
+          "quote": "--ppid pidlist\n              Select  by parent process ID."
+        }
+      ]
+    },
+    {
+      "id": "independent-gpasswd",
+      "query": "gpasswd 删除组密码后，非组成员还能用 newgrp 加入吗？",
+      "split": "independent",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "gpasswd(1)"
+      ],
+      "evidence": [
+        {
+          "source": "gpasswd(1)",
+          "document_sha256": "1075f53ff7bc2a1d21902f21ff7bc27d2e6b710f4d4bf32c7fd111d41f44e14b",
+          "start": 1527,
+          "end": 1731,
+          "quote": "-r, --remove-password\n           Remove the password from the named group. The group password will\n           be empty. Only group members will be allowed to use newgrp to join\n           the named group."
+        }
+      ]
+    },
+    {
+      "id": "independent-systemctl",
+      "query": "systemctl 如何停止一个服务？",
+      "split": "independent",
+      "evidence_status": "supported",
+      "expected_sources": [
+        "systemctl(1)"
+      ],
+      "evidence": [
+        {
+          "source": "systemctl(1)",
+          "document_sha256": "fe2b4d027d40f3103718aabc496a63b8f11e08b08c288886e33976c549bc5250",
+          "start": 18249,
+          "end": 18342,
+          "quote": "stop PATTERN...\n           Stop (deactivate) one or more units specified on the command line."
+        }
+      ]
+    },
+    {
+      "id": "independent-outside-1",
+      "query": "如何用 rsync 同步两台机器的目录？",
+      "split": "independent",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    },
+    {
+      "id": "independent-outside-2",
+      "query": "如何用 find 按文件大小查找？",
+      "split": "independent",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    },
+    {
+      "id": "independent-outside-3",
+      "query": "如何用 df 查看磁盘可用空间？",
+      "split": "independent",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    },
+    {
+      "id": "independent-outside-4",
+      "query": "如何用 awk 统计 CSV 文件的列？",
+      "split": "independent",
+      "evidence_status": "insufficient",
+      "expected_sources": [],
+      "evidence": []
+    }
+  ]
+}

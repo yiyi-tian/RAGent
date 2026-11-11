@@ -1,6 +1,6 @@
 # RAGent TCP协议规范 v1
 
-状态：TCP传输与帧格式保持v1；本次同步升级客户端和Agent，新增AGENT_REQUEST（类型4），不要求兼容仓库外旧客户端。阶段一C实现对四种业务请求均返回固定响应。后续响应字段和服务能力按开发阶段接入。
+状态：TCP v1，支持 CHAT、RAG、CMD、AGENT 请求、成功与错误响应以及 PING/PONG。
 
 ## 1. 范围与原则
 
@@ -78,16 +78,16 @@ RESPONSE统一包含text字符串和sources数组：
 }
 ```
 
-CHAT、CMD及第一阶段固定响应的sources为空。RAG来源项约定如下：
+CHAT、CMD 及固定响应的 sources 为空。RAG 和执行检索的 AGENT 返回来源，形状如下：
 
 ```json
 {
-  "text": "项目使用单 epoll 网络线程处理连接与非阻塞收发。",
+  "text": "ls -a 可以显示隐藏文件。",
   "sources": [
     {
-      "source": "development-plan.md",
+      "source": "ls(1)",
       "chunk_id": "chunk-12",
-      "text": "采用单 epoll 网络线程 + 全局固定工作线程池。",
+      "text": "-a, --all: do not ignore entries starting with .",
       "score": 0.86
     }
   ]
@@ -96,16 +96,10 @@ CHAT、CMD及第一阶段固定响应的sources为空。RAG来源项约定如下
 
 source、chunk_id、text均为字符串，score为有限JSON数值，表示检索相关性，不解释为概率。source使用可展示的文档标识，不暴露服务器私有绝对路径。
 
-Agent接入工具后，成功响应还需携带已执行操作摘要；其字段形状在Agent阶段冻结。阶段一没有工具执行，因此当前响应保持text和空sources，不返回操作项。模型或工具调用细节不通过客户端TCP帧传输。
-
-第一阶段四类请求均返回固定模板，不调用真实服务或执行命令。例如query为hello时：
-
-```json
-{
-  "text":"server received: hello",
-  "sources":[]
-}
-```
+在线 Agent 成功响应包含 `actions` 数组，每项含 `tool`、`status`、`summary`
+字符串；status 为 success 或 failed。固定响应可省略 actions。摘要描述实际成功或失败的
+工具调用；模拟诊断明确标注模拟性质。模型内部消息不通过 TCP 返回。
+达到调用限制或总时限时，部分响应须明确未完成状态，不能将工具失败伪报为成功。
 
 编码后的响应也必须满足1 MiB限制。不能截断已编码JSON；结果过大且业务层未预先限制时，返回小体积INTERNAL_ERROR。CMD输出超限使用专用错误码。
 
@@ -173,7 +167,7 @@ request_id从1开始，在同一连接中随请求（包括PING）递增且不�
 
 ## 6. 验收场景
 
-第一阶段：
+网络与客户端：
 
 - 使用上述字节样例验证头部编码；再使用非零高32位request_id验证64位大端序。
 - 验证中文长度、空消息体、非对象JSON、无效UTF-8、缺字段、错类型和空白query。
@@ -182,11 +176,11 @@ request_id从1开始，在同一连接中随请求（包括PING）递增且不�
 - 模拟部分写入与中途断开，确认数据不丢、服务器继续运行。
 - 验证CHAT/RAG/CMD/AGENT四种请求和单次请求共用编解码，Agent为客户端默认模式；固定响应与PING/PONG符合约定。
 
-第二阶段：
+线程池与并发：
 
 - 同一连接多个任务乱序完成，客户端按ID匹配。
 - 验证任务队列满时SERVER_BUSY及慢客户端触发发送上限。
 - 客户端断开后新连接复用同一fd，旧任务结果不能发送给新连接。
 - 验证完成结果内存有界及有序停止；日志能解释未送达结果的原因。
 
-第一阶段已提供黑盒自动化测试，运行方式和覆盖范围见[验证说明](testing.md)。第二阶段条目保留为后续验收要求，尚未实现线程池或任务队列。
+自动化覆盖及运行方式见[验证说明](testing.md)。

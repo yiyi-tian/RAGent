@@ -1,9 +1,11 @@
-"""第一阶段黑盒验收：独立构造线上帧，不复用客户端或服务器编解码实现。"""
+"""网络黑盒验收：独立构造线上帧，不复用客户端或服务器编解码实现。"""
 
 import concurrent.futures
 import errno
 import json
 import os
+import pty
+import resource
 import select
 import signal
 import socket
@@ -52,8 +54,10 @@ class RunningServer:
     def __init__(self, *arguments):
         self.log = tempfile.TemporaryFile(mode="w+")
         self.process = subprocess.Popen(
-            [SERVER, "--port", "0", *arguments], stdout=subprocess.PIPE,
-            stderr=self.log, text=True,
+            [SERVER, "--port", "0", *arguments],
+            stdout=subprocess.PIPE,
+            stderr=self.log,
+            text=True,
         )
         if not select.select([self.process.stdout], [], [], 10)[0]:
             self.close()
@@ -79,7 +83,11 @@ class RunningServer:
                 self.process.wait()
                 raise AssertionError("服务器未正常停止")
         self.process.stdout.close()
+        self.log.seek(0)
+        log_output = self.log.read(8192)
         self.log.close()
+        if self.process.returncode != 0:
+            raise AssertionError(f"服务器退出码为 {self.process.returncode}，日志: {log_output}")
 
 
 class NetworkTests(unittest.TestCase):
@@ -92,10 +100,39 @@ class NetworkTests(unittest.TestCase):
         cls.server.close()
         assert cls.server.process.returncode == 0
 
+    def test_server_raises_its_file_descriptor_soft_limit(self):
+        wrapper = """
+import os
+import resource
+import sys
+
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+resource.setrlimit(resource.RLIMIT_NOFILE, (64, hard))
+os.execv(sys.argv[1], sys.argv[1:])
+"""
+        process = subprocess.Popen(
+            [sys.executable, "-c", wrapper, SERVER, "--port", "0"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            self.assertTrue(select.select([process.stdout], [], [], 10)[0])
+            self.assertTrue(process.stdout.readline().startswith("Listening on"))
+            soft, _ = resource.prlimit(process.pid, resource.RLIMIT_NOFILE)
+            self.assertGreaterEqual(soft, 2048 + 2 * 64 + 64)
+        finally:
+            process.terminate()
+            process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 0)
+
     def client(self, *arguments, input=None, timeout=10):
         return subprocess.run(
-            [CLIENT, "--port", str(self.server.port), *arguments], input=input,
-            text=True, capture_output=True, timeout=timeout,
+            [CLIENT, "--port", str(self.server.port), *arguments],
+            input=input,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
         )
 
     def assert_closed(self, connection):
@@ -110,13 +147,21 @@ class NetworkTests(unittest.TestCase):
         with self.server.connect() as connection:
             request_id = 0x12345678ABCDEF01
             connection.sendall(frame(request_id=request_id))
-            self.assertEqual(receive(connection), (100, request_id, {"text": "server received: hello", "sources": []}))
+            self.assertEqual(
+                receive(connection),
+                (100, request_id, {"text": "server received: hello", "sources": []}),
+            )
 
     def test_modes_unicode_and_unknown_fields(self):
         with self.server.connect() as connection:
             for kind in (1, 2, 3, 4):
-                connection.sendall(frame(kind, kind, dump({"query": "  你好，epoll！\n", "extra": [1, 2]})))
-                self.assertEqual(receive(connection), (100, kind, {"text": "server received:   你好，epoll！\n", "sources": []}))
+                connection.sendall(
+                    frame(kind, kind, dump({"query": "  你好，epoll！\n", "extra": [1, 2]}))
+                )
+                self.assertEqual(
+                    receive(connection),
+                    (100, kind, {"text": "server received:   你好，epoll！\n", "sources": []}),
+                )
 
     def test_fragmented_frames(self):
         data = frame()
@@ -142,15 +187,26 @@ class NetworkTests(unittest.TestCase):
             self.assertEqual(receive(connection), (201, 1, {}))
 
     def test_invalid_bodies_keep_connection(self):
-        invalid = [b"", b"[]", b"null", b"{}", b'{"query":2}',
-                   b'{"query":""}', b'{"query":" \\t\\n\\r"}',
-                   b'{"query":"\xff"}', b'\xef\xbb\xbf{"query":"hello"}',
-                   b'{"query":"hello"}trailing', b'{"query":']
+        invalid = [
+            b"",
+            b"[]",
+            b"null",
+            b"{}",
+            b'{"query":2}',
+            b'{"query":""}',
+            b'{"query":" \\t\\n\\r"}',
+            b'{"query":"\xff"}',
+            b'\xef\xbb\xbf{"query":"hello"}',
+            b'{"query":"hello"}trailing',
+            b'{"query":',
+        ]
         with self.server.connect() as connection:
             for request_id, body in enumerate(invalid, start=1):
                 connection.sendall(frame(request_id=request_id, body=body))
                 kind, response_id, result = receive(connection)
-                self.assertEqual((kind, response_id, result["code"]), (101, request_id, "INVALID_REQUEST"))
+                self.assertEqual(
+                    (kind, response_id, result["code"]), (101, request_id, "INVALID_REQUEST")
+                )
             connection.sendall(frame(request_id=100))
             self.assertEqual(receive(connection)[0:2], (100, 100))
 
@@ -161,8 +217,7 @@ class NetworkTests(unittest.TestCase):
                 self.assertEqual(receive(connection)[2]["code"], "UNSUPPORTED_MESSAGE_TYPE")
 
     def test_invalid_headers_close_immediately(self):
-        headers = [(0, 1, 1, 0, 1), (MAGIC, 2, 1, 0, 1),
-                   (MAGIC, 1, 1, LIMIT + 1, 1)]
+        headers = [(0, 1, 1, 0, 1), (MAGIC, 2, 1, 0, 1), (MAGIC, 1, 1, LIMIT + 1, 1)]
         for header in headers:
             with self.subTest(header=header), self.server.connect() as connection:
                 connection.sendall(HEADER.pack(*header))
@@ -210,7 +265,10 @@ class NetworkTests(unittest.TestCase):
                 for request_id in range(1, 11):
                     query = f"client-{index}-request-{request_id}"
                     connection.sendall(frame((index % 3) + 1, request_id, dump({"query": query})))
-                    self.assertEqual(receive(connection), (100, request_id, {"text": "server received: " + query, "sources": []}))
+                    self.assertEqual(
+                        receive(connection),
+                        (100, request_id, {"text": "server received: " + query, "sources": []}),
+                    )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             list(executor.map(run, range(10)))
@@ -236,6 +294,7 @@ class NetworkTests(unittest.TestCase):
             result = self.client("--mode", mode, "--query", "你好")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), "server received: 你好")
+            self.assertNotIn("RAGent", result.stdout)
         result = self.client("--mode", "chat", "--query", "--help")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "server received: --help")
@@ -246,6 +305,10 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         for query in ("普通输入", "first", "one-shot", "second", "third"):
             self.assertIn("server received: " + query, result.stdout)
+        self.assertIn("  ____      _    ____", result.stdout)
+        self.assertNotIn("第一阶段", result.stdout)
+        self.assertIn("检索 Linux 手册后回答", result.stdout)
+        self.assertIn("模拟内存诊断，不读取宿主机指标", result.stdout)
         self.assertIn("默认使用 Agent 模式", result.stdout)
         self.assertIn("agent>", result.stdout)
         self.assertIn("chat>", result.stdout)
@@ -257,8 +320,13 @@ class NetworkTests(unittest.TestCase):
         self.assertIn("server received: 问题直接发给Agent", result.stdout)
 
     def test_client_usage_errors(self):
-        for args in (("--mode", "rag"), ("--query", "q"), ("--port", "-1"),
-                     ("--mode", "unknown", "--query", "q"), ("--mode", "chat", "--query", "  ")):
+        for args in (
+            ("--mode", "rag"),
+            ("--query", "q"),
+            ("--port", "-1"),
+            ("--mode", "unknown", "--query", "q"),
+            ("--mode", "chat", "--query", "  "),
+        ):
             self.assertEqual(self.client(*args).returncode, 2)
 
     def test_send_buffer_limit_and_server_survival(self):
@@ -269,7 +337,9 @@ class NetworkTests(unittest.TestCase):
 
                 def flood():
                     try:
-                        connection.sendall(b"".join(frame(request_id=i, body=request) for i in range(1, 15001)))
+                        connection.sendall(
+                            b"".join(frame(request_id=i, body=request) for i in range(1, 15001))
+                        )
                     except (OSError, TimeoutError):
                         pass
 
@@ -321,8 +391,15 @@ class NetworkTests(unittest.TestCase):
 
     def test_config_and_command_line_override(self):
         with tempfile.NamedTemporaryFile(mode="w+", suffix=".json") as config:
-            json.dump({"host": "127.0.0.1", "port": 9000, "max_connections": 1,
-                       "max_pending_bytes": 2097152}, config)
+            json.dump(
+                {
+                    "host": "127.0.0.1",
+                    "port": 9000,
+                    "max_connections": 1,
+                    "max_pending_bytes": 2097152,
+                },
+                config,
+            )
             config.flush()
             # RunningServer的--port 0在--config之前，仍然应覆盖配置中的9000。
             server = RunningServer("--config", config.name)
@@ -334,9 +411,13 @@ class NetworkTests(unittest.TestCase):
                 server.close()
 
     def test_client_interrupt_while_waiting_for_input(self):
-        process = subprocess.Popen([CLIENT, "--port", str(self.server.port)],
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen(
+            [CLIENT, "--port", str(self.server.port)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
         try:
             self.assertTrue(select.select([process.stdout], [], [], 5)[0])
             process.send_signal(signal.SIGINT)
@@ -354,8 +435,20 @@ class ClientPeerTests(unittest.TestCase):
             listener.bind(("127.0.0.1", 0))
             listener.listen(1)
             process = subprocess.Popen(
-                [CLIENT, "--port", str(listener.getsockname()[1]), "--timeout-ms", str(timeout_ms),
-                 "--mode", mode, "--query", "hello"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                [
+                    CLIENT,
+                    "--port",
+                    str(listener.getsockname()[1]),
+                    "--timeout-ms",
+                    str(timeout_ms),
+                    "--mode",
+                    mode,
+                    "--query",
+                    "hello",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
             listener.settimeout(5)
             with listener.accept()[0] as connection:
@@ -375,9 +468,19 @@ class ClientPeerTests(unittest.TestCase):
         result = self.run_peer(frame(100, 1, dump({"text": "answer", "sources": []})))
         self.assertEqual(result[:2], (0, "answer\n"))
 
+    def test_client_rag_sources(self):
+        source = {"source": "ls(1)", "chunk_id": "chunk-1", "text": "说明", "score": 0.8}
+        result = self.run_peer(frame(100, 1, dump({"text": "answer", "sources": [source]})))
+        self.assertEqual(result[:2], (0, "answer\n来源：ls(1) [chunk-1]\n"))
+        source["score"] = "invalid"
+        result = self.run_peer(frame(100, 1, dump({"text": "answer", "sources": [source]})))
+        self.assertNotEqual(result[0], 0)
+        self.assertIn("非法检索来源", result[2])
+
     def test_agent_client_uses_agent_request_type(self):
-        result = self.run_peer(frame(100, 1, dump({"text": "answer", "sources": []})),
-                               mode="agent", expected_type=4)
+        result = self.run_peer(
+            frame(100, 1, dump({"text": "answer", "sources": []})), mode="agent", expected_type=4
+        )
         self.assertEqual(result[:2], (0, "answer\n"))
 
     def test_default_repl_sends_agent_request_type(self):
@@ -386,7 +489,10 @@ class ClientPeerTests(unittest.TestCase):
             listener.listen(1)
             process = subprocess.Popen(
                 [CLIENT, "--port", str(listener.getsockname()[1])],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
             try:
                 listener.settimeout(5)
@@ -394,8 +500,7 @@ class ClientPeerTests(unittest.TestCase):
                     process.stdin.write("直接提问\n")
                     process.stdin.flush()
                     kind, request_id, body = receive(connection)
-                    self.assertEqual((kind, request_id, body),
-                                     (4, 1, {"query": "直接提问"}))
+                    self.assertEqual((kind, request_id, body), (4, 1, {"query": "直接提问"}))
                     connection.sendall(frame(100, 1, dump({"text": "answer", "sources": []})))
                     process.stdin.write("/exit\n")
                     process.stdin.flush()
@@ -406,6 +511,89 @@ class ClientPeerTests(unittest.TestCase):
                 if process.poll() is None:
                     process.kill()
                     process.communicate()
+
+    def test_terminal_wait_indicator(self):
+        for outcome in ("success", "error", "disconnect", "timeout", "interrupt"):
+            with self.subTest(outcome=outcome), socket.socket() as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                listener.settimeout(5)
+                master, slave = pty.openpty()
+                process = subprocess.Popen(
+                    [
+                        CLIENT,
+                        "--port",
+                        str(listener.getsockname()[1]),
+                        "--timeout-ms",
+                        "1800",
+                        "--mode",
+                        "chat",
+                        "--query",
+                        "hello",
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=slave,
+                    stderr=slave,
+                    env=dict(os.environ, TERM="xterm"),
+                )
+                os.close(slave)
+                output = bytearray()
+                try:
+                    with listener.accept()[0] as connection:
+                        connection.settimeout(5)
+                        receive(connection)
+                        deadline = time.monotonic() + 3
+                        while "等待服务响应".encode() not in output:
+                            self.assertLess(time.monotonic(), deadline, output)
+                            if select.select([master], [], [], 0.2)[0]:
+                                output.extend(os.read(master, 65536))
+                        if outcome == "success":
+                            connection.sendall(
+                                frame(100, 1, dump({"text": "answer", "sources": []}))
+                            )
+                        elif outcome == "error":
+                            connection.sendall(
+                                frame(101, 1, dump({"code": "SERVER_BUSY", "message": "繁忙"}))
+                            )
+                        elif outcome == "disconnect":
+                            connection.shutdown(socket.SHUT_RDWR)
+                        elif outcome == "interrupt":
+                            process.send_signal(signal.SIGINT)
+                        process.wait(timeout=5)
+                    while True:
+                        try:
+                            chunk = os.read(master, 65536)
+                        except OSError as error:
+                            if error.errno != errno.EIO:
+                                raise
+                            break
+                        if not chunk:
+                            break
+                        output.extend(chunk)
+                    text = output.decode()
+                    self.assertIn("秒", text)
+                    self.assertGreater(text.rfind("\x1b[2K"), text.index("等待服务响应"))
+                    if outcome == "success":
+                        self.assertEqual(process.returncode, 0, text)
+                        self.assertIn("answer", text)
+                        self.assertLess(text.rfind("\x1b[2K"), text.index("answer"))
+                    else:
+                        self.assertNotEqual(process.returncode, 0, text)
+                    if outcome == "interrupt":
+                        self.assertIn("服务端任务可能仍在执行", text)
+                    if outcome == "timeout":
+                        self.assertIn("请求执行结果未知", text)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait()
+                    os.close(master)
+
+    def test_redirected_wait_has_no_animation(self):
+        result = self.run_peer(None, timeout_ms=800)
+        self.assertEqual(result[0], 1)
+        self.assertNotIn("等待服务响应", result[2])
+        self.assertNotIn("\x1b", result[2])
 
     def test_remote_error_exit_code(self):
         result = self.run_peer(frame(101, 1, dump({"code": "INVALID_REQUEST", "message": "失败"})))
