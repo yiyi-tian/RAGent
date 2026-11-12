@@ -24,6 +24,14 @@ then
     sudo systemctl set-property "user@$(id -u).service" 'Delegate=cpu memory pids'
     systemctl --user restart ragent-sandbox-docker.service
 fi
+# 委派变更可能刚刚重启daemon，等待API可用后再导入镜像。
+for attempt in {1..60}; do
+    if docker --host "unix://$socket_path" info >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+docker --host "unix://$socket_path" info >/dev/null
 if [[ $(uname -m) != x86_64 ]]; then
     echo '当前固定基础镜像仅验证Ubuntu 24.04 amd64。' >&2
     exit 1
