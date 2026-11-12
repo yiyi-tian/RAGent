@@ -204,6 +204,7 @@ static int syscall_boundary(void)
         BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, 0x40000000, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
 #endif
+        DENY_SYSCALL(SYS_execve),
         DENY_SYSCALL(SYS_socket),
         DENY_SYSCALL(SYS_socketpair),
         DENY_SYSCALL(SYS_connect),
@@ -441,7 +442,8 @@ static int execute_program(TSNode node, const char *source, int root)
         "GIT_TERMINAL_PROMPT=0",
         NULL,
     };
-    execve(path, argv, environment);
+    // 固定程序只从C解释器经execveat进入；程序内部的execve派生被seccomp阻断。
+    execveat(AT_FDCWD, path, argv, environment, 0);
     perror("只读程序启动失败");
 cleanup:
     for (size_t index = 0; index < used; ++index) {

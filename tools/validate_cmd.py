@@ -66,7 +66,20 @@ CASES = [
     ("cmd", "仅使用命令工具执行pwd，输出当前目录的完整路径。不要调用其他命令。"),
     ("agent", "检索ls手册解释-a选项，并调用命令工具执行pwd报告当前目录。"),
     ("cmd", "仅调用命令工具执行touch approval-sentinel，不要执行其他命令。"),
+    ("agent", "检索man命令手册，解释man -a（显示所有匹配手册页）选项，并调用pwd报告当前目录。"),
 ]
+
+
+def source_hit(payload: dict | None, expected: str) -> bool:
+    if payload is None:
+        return False
+    sources = payload.get("sources")
+    if not isinstance(sources, list):
+        return False
+    for source in sources:
+        if isinstance(source, dict) and source.get("source") == expected:
+            return True
+    return False
 
 
 async def run(options):
@@ -75,6 +88,20 @@ async def run(options):
     retriever = ManualRetriever(BudgetEmbedding(embedding, budget), store)
     model = DeepSeekModel(before_call=lambda: budget.reserve("model"))
     app = create_app(retriever, model, 120, client_commands=True)
+    finals = []
+
+    @web.middleware
+    async def record_final(request, handler):
+        response = await handler(request)
+        if isinstance(response, web.Response) and response.status == 200:
+            body = response.body
+            if isinstance(body, bytes):
+                payload = json.loads(body)
+                if isinstance(payload, dict) and payload.get("kind") == "final":
+                    finals.append(payload)
+        return response
+
+    app.middlewares.append(record_final)
     runner = web.AppRunner(app, handler_cancellation=True)
     server = None
     report = {"phase": options.phase, "cases": [], "passed": False}
@@ -113,6 +140,7 @@ async def run(options):
                 if options.case and index not in options.case:
                     continue
                 started = time.monotonic()
+                previous_finals = len(finals)
                 client = await asyncio.create_subprocess_exec(
                     str(project / "build/agent"),
                     "--port",
@@ -135,12 +163,24 @@ async def run(options):
                     raise
                 output = stdout.decode(errors="replace")
                 diagnostic = stderr.decode(errors="replace")
+                final = finals[-1] if len(finals) > previous_finals else None
+                expected_source = {2: "ls(1)", 4: "man(1)"}.get(index)
                 if index == 3:
-                    passed = client.returncode == 3 and not (root / "approval-sentinel").exists()
+                    passed = (
+                        client.returncode == 3
+                        and final is not None
+                        and final.get("status") == "cancelled"
+                        and not (root / "approval-sentinel").exists()
+                    )
                 else:
-                    passed = client.returncode == 0 and directory in output
-                    if index == 2:
-                        passed = passed and "ls(1)" in output
+                    passed = (
+                        client.returncode == 0
+                        and final is not None
+                        and final.get("status") == "completed"
+                        and directory in output
+                    )
+                    if expected_source is not None:
+                        passed = passed and source_hit(final, expected_source)
                 report["cases"].append(
                     {
                         "case": index,
@@ -149,6 +189,8 @@ async def run(options):
                         "exit_code": client.returncode,
                         "seconds": time.monotonic() - started,
                         "passed": passed,
+                        "server_final": final,
+                        "expected_source": expected_source,
                         "output": output,
                         "diagnostic": diagnostic,
                     }
@@ -175,7 +217,7 @@ def main():
     parser.add_argument("--phase", choices=("precheck", "formal", "fix"), required=True)
     parser.add_argument("--ledger", type=Path, default=Path("artifacts/cmd-validation/budget.json"))
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--case", type=int, action="append", choices=range(1, 4))
+    parser.add_argument("--case", type=int, action="append", choices=range(1, 5))
     asyncio.run(run(parser.parse_args()))
 
 

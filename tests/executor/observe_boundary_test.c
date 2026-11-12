@@ -58,11 +58,13 @@ int main(void)
         char *arguments[] = { "sh", "-c", "true", NULL };
         char *environment[] = { NULL };
         assert(execve("/bin/sh", arguments, environment) < 0);
-        _exit(0);
+        char *allowed_arguments[] = {"ls", NULL};
+        assert(execve("/usr/bin/ls", allowed_arguments, environment) < 0 && errno == EPERM);
+        _exit(23);
     }
     int status;
     assert(waitpid(child, &status, 0) == child);
-    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 23);
     assert(unlinkat(root, "file", 0) == 0);
     assert(unlinkat(root, ".env", 0) == 0);
     assert(unlinkat(root, "escape", 0) == 0);
