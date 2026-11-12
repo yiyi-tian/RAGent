@@ -27,8 +27,20 @@ foreach(target agent-server agent)
     target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
 endforeach()
 
+add_library(command-runner src/executor/command.c)
+target_include_directories(command-runner PUBLIC "${PROJECT_SOURCE_DIR}/include")
+target_compile_options(command-runner PRIVATE -Wall -Wextra -Wpedantic)
+add_executable(ragent-executor src/executor/main.c)
+target_link_libraries(ragent-executor PRIVATE command-runner agent-common)
+target_compile_options(ragent-executor PRIVATE -Wall -Wextra -Wpedantic)
+
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(executor-test tests/executor/runner_test.c)
+    target_link_libraries(executor-test PRIVATE command-runner)
+    target_compile_options(executor-test PRIVATE -Wall -Wextra -Wpedantic -UNDEBUG)
+    add_test(NAME executor-unit COMMAND executor-test)
+    set_tests_properties(executor-unit PROPERTIES TIMEOUT 15)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_executable(socket-probe tools/socket_probe.c)
     target_link_libraries(socket-probe PRIVATE Threads::Threads PkgConfig::JSONC)
@@ -73,10 +85,12 @@ if(BUILD_TESTING)
         add_test(NAME agent-workers-integration COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/integration/agent_workers_test.py)
         set_tests_properties(agent-workers-integration PROPERTIES
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 180 RUN_SERIAL TRUE)
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} TIMEOUT 180 RUN_SERIAL TRUE
+            ENVIRONMENT "RAGENT_EXECUTOR=$<TARGET_FILE:ragent-executor>")
         add_test(NAME agent-unit COMMAND ${Python3_EXECUTABLE} -m unittest discover -s tests/agent -v)
         set_tests_properties(agent-unit PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-            ENVIRONMENT "RAGENT_SERVER=$<TARGET_FILE:agent-server>" TIMEOUT 60
+            ENVIRONMENT "RAGENT_SERVER=$<TARGET_FILE:agent-server>;RAGENT_EXECUTOR=$<TARGET_FILE:ragent-executor>"
+            TIMEOUT 90
             RUN_SERIAL TRUE)
     else()
         message(STATUS "Agent tests disabled: run pip install -e '.[dev]' in the selected Python environment")

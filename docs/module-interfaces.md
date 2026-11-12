@@ -1,6 +1,6 @@
 # RAGent 模块接口
 
-本文描述当前网络、Agent、模型与检索接口。真实命令执行器与沙箱的接口尚待确定。
+本文描述当前网络、Agent、模型与检索接口。首批只读诊断通过独立C执行器调用；写操作与沙箱接口尚待确定。
 TCP 帧格式以[协议规范](protocol.md)为准。
 
 ## C 网络与资源所有权
@@ -63,8 +63,8 @@ RAG 和已调用检索的 AGENT 会加入只依据证据作答的
 |---|---|
 | CHAT | 无工具 |
 | RAG | 编排层强制检索后提供证据，不插入伪造的模型工具调用 |
-| CMD | 仅模拟 diagnose，target 为 memory |
-| AGENT | search_linux_manual 与模拟 diagnose |
+| CMD | diagnose，target为memory、disk或processes |
+| AGENT | search_linux_manual 与diagnose |
 
 每请求最多 4 次模型调用，每轮最多 4 个工具。服务总时限默认 120 秒，可通过
 `--request-timeout` 设置；无成功结果时总超时返回错误，有成功工具结果时返回未完成摘要。
@@ -101,7 +101,7 @@ vector 策略不加载该索引，直接执行单路向量检索。
 模型和检索方式由 Python 启动参数选择。真实入口客户端需使用 `--timeout-ms 130000`。
 模型单次超时与 Token 上限由环境提供。不带配置文件启动 C 服务时使用固定响应。
 
-真实命令执行器尚未实现；其权限、结构化输入、超时、输出限制和子进程回收需在实现前确定。
+只读执行器接口见下节；命令由服务用户执行，不提升权限。
 自动写操作必须限制在隔离工作区，隔离不可用时禁用，不向 Agent 暴露 Docker 管理套接字。
 
 排队过期任务在工作线程取出时返回 UPSTREAM_TIMEOUT，不再发起后端调用。
@@ -110,6 +110,28 @@ C HTTP 使用剩余时限，Python 模型信号量等待与工具循环均计入
 HTTP 调用方断开会取消 Python 请求。已提交云端的调用可能仍产生用量，取消不保证
 撤销远端执行；写工具需单独落实取消与回收语义。
 
-CLI在线服务持有的模型客户端与检索线程池在应用退出时关闭；模型初始化失败时回收已创建的检索器。
+CLI在线服务持有的模型客户端、检索线程池与执行器在应用退出时关闭；模型初始化失败时回收已创建的检索器。
 通过 `create_app` 注入的共享资源由调用者管理，应用不自动关闭。模型异步客户端关闭失败时，
 仍释放同步客户端并保留原异常。
+
+## 首批只读执行器接口
+
+Python使用`asyncio.create_subprocess_exec`启动独立`ragent-executor`，每进程处理一次请求后退出。
+stdin为不超过4095字节的UTF-8 JSON对象，写入后关闭；stdout为一个JSON结果；stderr不作为工具输出。
+请求仅接受`{"target":"memory","timeout_ms":3000}`，timeout_ms为1至3000的整数，取请求剩余预算。
+`target`只允许memory、disk、processes，固定程序与参数统一维护在`src/executor/command.c`。
+没有任意路径、命令字符串、环境变量或Shell参数接口。业务不进入协议编解码模块。
+
+结果为`ok`布尔值、`code`字符串、`output`字符串、`exit_code`整数和`signal`整数。
+成功时code为空、exit_code与signal为0；错误码为既有COMMAND_NOT_ALLOWED、COMMAND_TIMEOUT、
+COMMAND_OUTPUT_LIMIT或COMMAND_FAILED。失败输出不作为成功证据回填；Agent保留错误码及失败摘要，
+其他工具成功结果仍可继续使用。模型实际tool_call_id与ToolMessage一一对应。
+
+C执行器使用单调时钟、非阻塞管道和有界等待，输出最多16384字节，超限直接失败；不截断成成功。
+命令独立进程组，超时和取消时杀死整组并waitpid回收直接子进程；子进程stdin为/dev/null，
+只继承固定PATH和LC_ALL，不继承云端密钥。Python取消时通知C执行器清理，退出时回收活动任务。
+全组命令最多4个并发，按固定工作进程数均分；等待名额也计入请求总时限。
+
+`--commands mock|local`默认mock；local模式启动时校验执行器可用，/ready也检查本机执行器文件，
+不执行诊断或调用云端。`--executor`或RAGENT_EXECUTOR_PATH指定路径，默认build/ragent-executor。
+通过create_app注入的共享执行器与模型、检索器一样由调用者关闭。当前没有写操作或沙箱能力。

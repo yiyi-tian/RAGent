@@ -15,11 +15,16 @@ import unittest
 
 
 class WorkerIntegrationTests(unittest.TestCase):
-    def run_case(self, fail_worker):
+    def run_case(self, fail_worker, local_commands=False):
         with tempfile.TemporaryFile() as log:
             env = dict(os.environ, RAGENT_MODEL_CONCURRENCY="8", RAGENT_RETRIEVAL_WORKERS="4")
+            arguments = [sys.executable, "-m", "ragent", "--workers", "4", "--port", "0"]
+            if local_commands:
+                arguments.extend(
+                    ["--commands", "local", "--executor", os.environ["RAGENT_EXECUTOR"]]
+                )
             process = subprocess.Popen(
-                [sys.executable, "-m", "ragent", "--workers", "4", "--port", "0"],
+                arguments,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=log,
@@ -53,7 +58,10 @@ class WorkerIntegrationTests(unittest.TestCase):
                         )
                         response = connection.getresponse()
                         self.assertEqual(response.status, 200)
-                        self.assertIn("模拟回答", json.loads(response.read())["text"])
+                        text = json.loads(response.read())["text"]
+                        self.assertIn("模拟回答", text)
+                        if local_commands:
+                            self.assertIn("Mem:", text)
                     finally:
                         connection.close()
 
@@ -79,6 +87,10 @@ class WorkerIntegrationTests(unittest.TestCase):
                 for child in children:
                     if Path(f"/proc/{child}").exists():
                         os.kill(int(child), signal.SIGKILL)
+
+    @unittest.skipUnless(os.environ.get("RAGENT_EXECUTOR"), "需先构建C执行器")
+    def test_local_commands_across_workers(self):
+        self.run_case(False, local_commands=True)
 
     def test_ready_and_shutdown(self):
         self.run_case(False)

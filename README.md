@@ -2,7 +2,7 @@
 
 RAGent 是面向 Linux 系统编程课程的多客户端 Agent。C17 客户端通过自定义 TCP
 协议接入 C 网络服务，工作线程通过 HTTP/JSON 调用 Python LangChain Agent。
-Agent 支持 DeepSeek 问答、Linux 手册检索和工具调用；诊断工具目前为模拟实现。
+Agent 支持 DeepSeek 问答、Linux 手册检索和工具调用；支持由独立C执行器完成内存、根目录磁盘和进程只读诊断。
 
 ## 一键本机部署
 
@@ -44,7 +44,7 @@ Ubuntu 24.04 需要 C17 编译器、CMake 3.16 以上、pkg-config、json-c、li
 Python 3.11 以上。Python 依赖与开发工具配置见 `pyproject.toml`。
 
 ```bash
-sudo apt install build-essential cmake pkg-config libjson-c-dev libcurl4-openssl-dev python3-venv
+sudo apt install build-essential cmake pkg-config libjson-c-dev libcurl4-openssl-dev python3-venv procps
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
@@ -66,7 +66,7 @@ ctest --test-dir build --output-on-failure
 set -a
 source .env
 set +a
-.venv/bin/ragent-server --model deepseek --retrieval qdrant
+.venv/bin/ragent-server --model deepseek --retrieval qdrant --commands local
 ```
 
 另一终端启动 C 服务（保持运行）：
@@ -101,8 +101,8 @@ agent> /exit
 |---|---|
 | CHAT | 直接调用模型，不提供工具 |
 | RAG | 强制先检索 Linux 手册，再交给模型回答并回传来源 |
-| CMD | 提供模拟内存诊断，由模型解释；不读取宿主机指标 |
-| AGENT | 模型自主选择检索或模拟诊断，可迭代调用工具 |
+| CMD | 模型调用只读诊断并解释结果；实际或模拟由服务启动参数选择 |
+| AGENT | 模型自主选择检索或只读诊断，可迭代调用工具 |
 
 C 请求预算由 agent_timeout_ms 配置，默认 125 秒，从完整请求入队开始，包含排队及
 HTTP 调用。过期任务不再执行；Python 接收剩余预算并与自身默认 120 秒取较小值。
@@ -128,6 +128,19 @@ Python 可通过 `--workers 1..4` 或 `RAGENT_AGENT_WORKERS` 设置固定工作�
 索引。增加进程的性能收益需按实际机器和上游服务测量，容量验收见
 [高并发配置与测量](docs/performance-concurrency.md)。
 
+## 只读命令工具
+
+部署脚本使用`--commands local`，CMD与AGENT可调用`diagnose(target=memory|disk|processes)`。
+C执行器固定运行`free -b`、`df -P -k /`或`ps -eo pid,ppid,pcpu,pmem,comm --sort=-pcpu`，
+不接受用户路径、任意参数或Shell。每次命令最多3秒、输出最多16 KiB；全组命令并发上限为4，
+四进程时每进程1个。权限由C端再次校验；不支持写操作。
+
+手动启动也需显式加`--commands local`，默认`--commands mock`保留模拟诊断，模拟结果会标注。
+默认执行器为仓库下`build/ragent-executor`，可通过`--executor /绝对路径/ragent-executor`
+或`RAGENT_EXECUTOR_PATH`指定。Python wheel不包含C二进制，需另行构建并提供该路径。
+执行器缺失时local模式启动失败，运行中失效返回工具失败；不自动切换为模拟执行。
+工具失败的既有`COMMAND_*`错误码保留在actions摘要和ToolMessage中，不改变TCP消息格式。
+
 ## 可选：单次请求
 
 只发送一个问题并退出时，使用 `--query`，可通过 `--mode` 指定模式。
@@ -147,7 +160,7 @@ flowchart LR
     A --> R[Linux 手册检索]
     R --> E[百炼 Embedding]
     R --> Q[(Qdrant)]
-    A --> T[模拟诊断工具]
+    A --> T[C只读执行器]
     P[Python 离线入库] --> Q
 ```
 
@@ -172,8 +185,8 @@ DeepSeek 模型默认并发上限为 32，可用 RAGENT_MODEL_CONCURRENCY 设置
 ```
 
 网络、Agent、真实检索和 DeepSeek 已打通，构建与自动化检查结果见
-[验证说明](docs/testing.md)。下一阶段实现真实只读诊断和 C 受控执行器，再推进沙箱写入、
-全链路压测和部署验收。目前没有真实命令执行或沙箱能力。断连取消、截止时间传播、
+[验证说明](docs/testing.md)。首批只读诊断已接入C执行器；后续推进沙箱写入、
+真实模型命令联调和跨设备部署验收。目前没有工作区写入或沙箱能力。断连取消、截止时间传播、
 资源关闭和本地就绪检查已实现。
 默认单进程与可选四进程配置均完成三轮32在途、600请求真实模型测试。
 四进程另完成真实千在途1000/1000成功，吞吐8.822请求/秒、混合P95为106.894秒。

@@ -1,4 +1,4 @@
-"""每请求独立的模型与工具编排，不执行系统命令。"""
+"""每请求独立的模型与工具编排，命令执行交给独立C执行器。"""
 
 import asyncio
 import logging
@@ -10,6 +10,7 @@ from langchain_core.tools import tool
 from rag.search import MAX_QUERY_LENGTH
 from rag.runtime import REQUEST_STATE, RequestExpired, RequestState
 from .errors import ModelError
+from .tools.commands import CommandError, ReadOnlyExecutor
 
 if TYPE_CHECKING:
     from .model import Model
@@ -37,10 +38,10 @@ def search_linux_manual(query: str) -> dict:
 
 @tool
 def diagnose(target: str) -> dict:
-    """返回模拟诊断结果，target 只能是 memory。"""
-    if target != "memory":
-        raise ValueError("target 只支持 memory")
-    return {"text": "模拟内存诊断：未读取宿主机。"}
+    """查看内存、根目录磁盘或进程快照；target为memory、disk或processes。"""
+    if target not in ("memory", "disk", "processes"):
+        raise ValueError("target只支持memory、disk或processes")
+    return {"text": f"模拟诊断（{target}）：未读取宿主机。"}
 
 
 TOOLS = {t.name: t for t in (search_linux_manual, diagnose)}
@@ -90,6 +91,7 @@ async def answer(
     timeout: float = 10,
     rounds: int = 4,
     retriever=None,
+    executor: ReadOnlyExecutor | None = None,
 ) -> dict:
     """执行独立请求，返回 text、sources 和 actions；输入非法时抛出 ValueError。"""
     if (
@@ -121,11 +123,23 @@ async def answer(
                     if len(combined_query) <= MAX_QUERY_LENGTH:
                         retrieval_query = combined_query
                 result = await retriever(retrieval_query)
+            elif name == "diagnose" and executor is not None:
+                result = await executor.ainvoke(args["target"])
             else:
                 result = await tool.ainvoke(args)
             sources.extend(result.get("sources", []))
-            actions.append({"tool": name, "status": "success", "summary": result["text"]})
+            actions.append(
+                {
+                    "tool": name,
+                    "status": "success",
+                    "summary": result.get("summary", result["text"]),
+                }
+            )
             return result["text"]
+        except CommandError as error:
+            summary = f"{error.code}：{error}"
+            actions.append({"tool": name, "status": "failed", "summary": summary})
+            return summary
         except RequestExpired as error:
             raise ModelError("UPSTREAM_TIMEOUT", "请求总时限已到") from error
         except Exception:

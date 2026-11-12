@@ -1,6 +1,7 @@
 """同一HTTP监听端口的固定工作进程；每个进程独立持有在线资源。"""
 
 import asyncio
+from contextlib import AsyncExitStack
 import multiprocessing
 import os
 import signal
@@ -25,18 +26,20 @@ def worker_entry(listener, stop, start, ready, listening, options, index, config
     os.environ["RAGENT_RETRIEVAL_WORKERS"] = str(
         split_limit(options["retrieval_workers"], options["workers"], index)
     )
-    uvloop.run(serve(listener, stop, start, ready, listening, options, configure))
+    uvloop.run(serve(listener, stop, start, ready, listening, options, configure, index))
 
 
-async def serve(listener, stop, start, ready, listening, options, configure):
+async def serve(listener, stop, start, ready, listening, options, configure, index):
     from .__main__ import create_app
     from .model import DeepSeekModel
     from .retrieval import create_retriever
+    from .tools.commands import ReadOnlyExecutor
 
     retriever = None
     model = None
     runner = None
     cleanup = None
+    executor = None
     address = listener.getsockname()
     listener.close()
     listener = socket.socket()
@@ -48,7 +51,11 @@ async def serve(listener, stop, start, ready, listening, options, configure):
             retriever = create_retriever()
         if options["model"] == "deepseek":
             model = DeepSeekModel()
-        app = create_app(retriever, model, options["timeout"])
+        if options.get("commands", "mock") == "local":
+            executor = ReadOnlyExecutor(
+                options["executor_path"], split_limit(4, options["workers"], index)
+            )
+        app = create_app(retriever, model, options["timeout"], executor)
         if configure is not None:
             cleanup = configure(app, retriever, model)
         runner = web.AppRunner(app, access_log=None, handler_cancellation=True, shutdown_timeout=5)
@@ -63,21 +70,16 @@ async def serve(listener, stop, start, ready, listening, options, configure):
             while not stop.value:
                 await asyncio.sleep(0.1)
     finally:
-        try:
+        # 逆序回收所有已创建资源；某一项关闭失败也继续回收其余资源。
+        async with AsyncExitStack() as resources:
+            resources.callback(listener.close)
+            if cleanup is not None:
+                resources.callback(cleanup)
+            for resource in (retriever, model, executor):
+                if resource is not None:
+                    resources.push_async_callback(resource.close)
             if runner is not None:
-                await runner.cleanup()
-        finally:
-            try:
-                if model is not None:
-                    await model.close()
-            finally:
-                try:
-                    if retriever is not None:
-                        await retriever.close()
-                finally:
-                    if cleanup is not None:
-                        cleanup()
-                    listener.close()
+                resources.push_async_callback(runner.cleanup)
 
 
 class WorkerGroup:

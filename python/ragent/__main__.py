@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from contextlib import AsyncExitStack
 import logging
 import json
 from functools import partial
@@ -15,9 +16,10 @@ from .agent import RetrievalError, answer
 from .errors import ModelError
 from .model import DeepSeekModel
 from .retrieval import create_retriever
+from .tools.commands import ReadOnlyExecutor
 
 
-def create_app(retriever=None, model=None, timeout=10):
+def create_app(retriever=None, model=None, timeout=10, executor=None):
     async def handle(request):
         try:
             data = await request.json()
@@ -45,6 +47,7 @@ def create_app(retriever=None, model=None, timeout=10):
                 retriever=retriever,
                 model=model,
                 timeout=request_timeout,
+                executor=executor,
             )
         except (ValueError, KeyError, TypeError):
             return web.json_response(
@@ -79,7 +82,14 @@ def create_app(retriever=None, model=None, timeout=10):
             "model": "mock" if model is None else "configured",
             "cloud_checked": False,
             "retrieval": "mock" if retriever is None else "qdrant",
+            "commands": "mock" if executor is None else "local",
         }
+        if executor is not None:
+            try:
+                executor.check_ready()
+            except ValueError:
+                status["ready"] = False
+                status["commands"] = "unavailable"
         if retriever is not None:
             check = getattr(retriever, "check_ready", None)
             if check is None:
@@ -107,6 +117,10 @@ def main():
     parser.add_argument("--port", type=int, default=9001)
     parser.add_argument("--retrieval", choices=("mock", "qdrant"), default="mock")
     parser.add_argument("--model", choices=("mock", "deepseek"), default="mock")
+    parser.add_argument("--commands", choices=("mock", "local"), default="mock")
+    parser.add_argument(
+        "--executor", default=os.environ.get("RAGENT_EXECUTOR_PATH", "build/ragent-executor")
+    )
     parser.add_argument("--request-timeout", type=float, default=120)
     parser.add_argument("--workers", type=int, default=os.environ.get("RAGENT_AGENT_WORKERS", "1"))
     args = parser.parse_args()
@@ -122,11 +136,14 @@ def main():
             "model": args.model,
             "retrieval": args.retrieval,
             "timeout": args.request_timeout,
+            "commands": args.commands,
+            "executor_path": args.executor,
             "model_concurrency": int(os.environ.get("RAGENT_MODEL_CONCURRENCY", "32")),
             "retrieval_workers": int(os.environ.get("RAGENT_RETRIEVAL_WORKERS", "8")),
         }
         supervise(args.host, args.port, options)
         return
+    executor = ReadOnlyExecutor(args.executor) if args.commands == "local" else None
     retriever = create_retriever() if args.retrieval == "qdrant" else None
     try:
         model = DeepSeekModel() if args.model == "deepseek" else None
@@ -134,15 +151,13 @@ def main():
         if retriever is not None:
             uvloop.run(retriever.close())
         raise
-    app = create_app(retriever, model, args.request_timeout)
+    app = create_app(retriever, model, args.request_timeout, executor)
 
     async def close_resources(app):
-        try:
-            if model is not None:
-                await model.close()
-        finally:
-            if retriever is not None:
-                await retriever.close()
+        async with AsyncExitStack() as resources:
+            for resource in (retriever, model, executor):
+                if resource is not None:
+                    resources.push_async_callback(resource.close)
 
     app.on_cleanup.append(close_resources)
     web.run_app(

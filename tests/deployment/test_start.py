@@ -102,6 +102,7 @@ with socket.socket() as listener:
         self.program(".venv/bin/ragent-server", service)
         self.program("build/agent-server", service)
         self.program("build/agent", "#!/bin/sh\nexit 0\n")
+        self.program("build/ragent-executor", "#!/bin/sh\nexit 0\n")
         (self.root / "rag/__init__.py").write_text("")
         (self.root / "rag/services.py").write_text("""
 class ServiceError(Exception):

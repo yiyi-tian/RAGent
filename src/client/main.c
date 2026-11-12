@@ -472,7 +472,7 @@ static void print_help(void)
     puts("/agent [问题]  Agent 自动选择可用工具\n"
          "/chat [问题]   模型对话，不调用工具\n"
          "/rag [问题]    检索 Linux 手册后回答，并显示来源\n"
-         "/cmd [问题]    调用诊断工具并解释结果（当前为模拟诊断）\n"
+         "/cmd [问题]    调用只读诊断工具并解释结果\n"
          "不带问题时切换模式；带问题时仅发送本次请求。能力取决于服务端配置。\n"
          "/back 返回 Agent 模式；/help 帮助；/status 网络检查；/clear 清屏；/exit 退出\n"
          "/list 在 CMD 模式显示诊断工具说明。");
@@ -602,8 +602,9 @@ static int repl(Client *client, const Options *options)
             }
         } else if (command_length == strlen("/list") &&
                    memcmp(line + command_start, "/list", command_length) == 0) {
-            puts(mode == CLIENT_MODE_CMD ? "diagnose(target=memory)：模拟内存诊断，不读取宿主机指标。\n"
-                                         "实际可用能力取决于服务端配置。"
+            puts(mode == CLIENT_MODE_CMD ? "diagnose(target=memory|disk|processes)：\n"
+                                         "内存、根目录磁盘与进程只读诊断。\n"
+                                         "是否读取实际指标由服务端 --commands local 设置。"
                                          : "请先进入 /cmd 模式。");
         } else {
             puts("未知命令，输入 /help 查看帮助。");

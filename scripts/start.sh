@@ -77,7 +77,7 @@ if [[ $deploy == true ]]; then
     fi
 else
     for executable in .venv/bin/python .venv/bin/ragent-server \
-        ./build/agent-server ./build/agent; do
+        ./build/agent-server ./build/agent "${RAGENT_EXECUTOR_PATH:-./build/ragent-executor}"; do
         if [[ ! -x $executable ]]; then
             echo "缺少 $executable，请先运行 bash scripts/start.sh --deploy。" >&2
             exit 1
@@ -240,7 +240,7 @@ PY
     return 1
 }
 
-.venv/bin/ragent-server --model deepseek --retrieval qdrant --port "$agent_port" \
+.venv/bin/ragent-server --model deepseek --retrieval qdrant --commands local --port "$agent_port" \
     >"$run_dir/agent.log" 2>&1 &
 agent_pid=$!
 wait_for_service "$agent_pid" "$agent_port" "$run_dir/agent.log"
