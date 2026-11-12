@@ -8,6 +8,7 @@ import json
 from functools import partial
 import math
 import os
+import re
 
 from aiohttp import web
 import uvloop
@@ -16,10 +17,11 @@ from .agent import RetrievalError, answer
 from .errors import ModelError
 from .model import DeepSeekModel
 from .retrieval import create_retriever
-from .tools.commands import ReadOnlyExecutor
+from .tools.commands import CommandError
+from .tools.workspace import SandboxExecutor, SessionContext, create_executor
 
 
-def create_app(retriever=None, model=None, timeout=10, executor=None):
+def create_app(retriever=None, model=None, timeout=10, executor=None, sandbox_maintenance=True):
     async def handle(request):
         try:
             data = await request.json()
@@ -39,6 +41,23 @@ def create_app(retriever=None, model=None, timeout=10, executor=None):
                 {"code": "INVALID_REQUEST", "message": "timeout_ms 必须为 1 至 600000 的整数"},
                 status=400,
             )
+        session = None
+        context = data.get("session")
+        if context is not None:
+            if (
+                not isinstance(context, dict)
+                or set(context) != {"server_id", "connection_id"}
+                or not isinstance(context.get("server_id"), str)
+                or re.fullmatch(r"[a-f0-9]{32}", context["server_id"]) is None
+                or not isinstance(context.get("connection_id"), str)
+                or re.fullmatch(r"[1-9][0-9]{0,19}", context["connection_id"]) is None
+            ):
+                return web.json_response(
+                    {"code": "INVALID_REQUEST", "message": "连接上下文非法"}, status=400
+                )
+            session = SessionContext(
+                context["server_id"], context["connection_id"], data["request_id"]
+            )
         request_timeout = timeout if remaining_ms is None else min(timeout, remaining_ms / 1000)
         try:
             result = await answer(
@@ -48,6 +67,7 @@ def create_app(retriever=None, model=None, timeout=10, executor=None):
                 model=model,
                 timeout=request_timeout,
                 executor=executor,
+                session=session,
             )
         except (ValueError, KeyError, TypeError):
             return web.json_response(
@@ -77,17 +97,24 @@ def create_app(retriever=None, model=None, timeout=10, executor=None):
         return web.json_response({"alive": True})
 
     async def ready(request):
+        commands = "mock"
+        if isinstance(executor, SandboxExecutor):
+            commands = "sandbox"
+        elif executor is not None:
+            commands = "local"
         status = {
             "ready": True,
             "model": "mock" if model is None else "configured",
             "cloud_checked": False,
             "retrieval": "mock" if retriever is None else "qdrant",
-            "commands": "mock" if executor is None else "local",
+            "commands": commands,
         }
         if executor is not None:
             try:
                 executor.check_ready()
-            except ValueError:
+                if isinstance(executor, SandboxExecutor):
+                    await asyncio.wait_for(executor.probe(), 3)
+            except (ValueError, CommandError, TimeoutError):
                 status["ready"] = False
                 status["commands"] = "unavailable"
         if retriever is not None:
@@ -104,10 +131,45 @@ def create_app(retriever=None, model=None, timeout=10, executor=None):
                     status["retrieval"] = "unavailable"
         return web.json_response(status, status=200 if status["ready"] else 503)
 
+    async def sync_sessions(request):
+        if not isinstance(executor, SandboxExecutor):
+            return web.json_response({"ok": False}, status=503)
+        try:
+            snapshot = await request.json()
+            if not isinstance(snapshot, dict):
+                raise ValueError("快照必须为对象")
+            await executor.sync(snapshot)
+        except ValueError:
+            return web.json_response({"ok": False}, status=400)
+        except CommandError as error:
+            logging.getLogger(__name__).warning("工作区维护失败 code=%s", error.code)
+            return web.json_response({"ok": False, "code": error.code}, status=503)
+        return web.json_response({"ok": True})
+
+    async def maintain_sandboxes(app):
+        sandbox_executor = executor
+        assert isinstance(sandbox_executor, SandboxExecutor)
+
+        async def maintain():
+            while True:
+                await asyncio.sleep(2)
+                try:
+                    await sandbox_executor.probe()
+                except CommandError as error:
+                    logging.getLogger(__name__).warning("沙箱对账失败 code=%s", error.code)
+
+        task = asyncio.create_task(maintain())
+        yield
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
     app = web.Application(client_max_size=1024 * 1024)
     app.router.add_get("/health", health)
     app.router.add_get("/ready", ready)
     app.router.add_post("/agent", handle)
+    app.router.add_post("/internal/sessions/sync", sync_sessions)
+    if isinstance(executor, SandboxExecutor) and sandbox_maintenance:
+        app.cleanup_ctx.append(maintain_sandboxes)
     return app
 
 
@@ -117,7 +179,7 @@ def main():
     parser.add_argument("--port", type=int, default=9001)
     parser.add_argument("--retrieval", choices=("mock", "qdrant"), default="mock")
     parser.add_argument("--model", choices=("mock", "deepseek"), default="mock")
-    parser.add_argument("--commands", choices=("mock", "local"), default="mock")
+    parser.add_argument("--commands", choices=("mock", "local", "sandbox"), default="mock")
     parser.add_argument(
         "--executor", default=os.environ.get("RAGENT_EXECUTOR_PATH", "build/ragent-executor")
     )
@@ -128,6 +190,8 @@ def main():
         parser.error("请求总时限必须是有限正数")
     if not 1 <= args.workers <= 4:
         parser.error("工作进程数必须为1至4")
+    if args.commands == "sandbox" and args.host not in ("127.0.0.1", "::1", "localhost"):
+        parser.error("sandbox内部HTTP服务仅可绑定本机回环地址")
     if args.workers > 1:
         from .workers import supervise
 
@@ -143,7 +207,7 @@ def main():
         }
         supervise(args.host, args.port, options)
         return
-    executor = ReadOnlyExecutor(args.executor) if args.commands == "local" else None
+    executor = uvloop.run(create_executor(args.commands, args.executor))
     retriever = create_retriever() if args.retrieval == "qdrant" else None
     try:
         model = DeepSeekModel() if args.model == "deepseek" else None

@@ -33,7 +33,7 @@ async def serve(listener, stop, start, ready, listening, options, configure, ind
     from .__main__ import create_app
     from .model import DeepSeekModel
     from .retrieval import create_retriever
-    from .tools.commands import ReadOnlyExecutor
+    from .tools.workspace import create_executor
 
     retriever = None
     model = None
@@ -51,11 +51,14 @@ async def serve(listener, stop, start, ready, listening, options, configure, ind
             retriever = create_retriever()
         if options["model"] == "deepseek":
             model = DeepSeekModel()
-        if options.get("commands", "mock") == "local":
-            executor = ReadOnlyExecutor(
-                options["executor_path"], split_limit(4, options["workers"], index)
-            )
-        app = create_app(retriever, model, options["timeout"], executor)
+        executor = await create_executor(
+            options.get("commands", "mock"),
+            options.get("executor_path", "build/ragent-executor"),
+            split_limit(4, options["workers"], index),
+        )
+        app = create_app(
+            retriever, model, options["timeout"], executor, sandbox_maintenance=index == 0
+        )
         if configure is not None:
             cleanup = configure(app, retriever, model)
         runner = web.AppRunner(app, access_log=None, handler_cancellation=True, shutdown_timeout=5)

@@ -24,6 +24,9 @@ int main(void)
     if (sigaction(SIGTERM, &action, NULL) != 0 || sigaction(SIGINT, &action, NULL) != 0) {
         return 1;
     }
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        return 1;
+    }
     unsigned char input[4096];
     size_t length = 0;
     while (length < sizeof(input) && !cancelled) {
@@ -46,7 +49,7 @@ int main(void)
         .code = "COMMAND_NOT_ALLOWED",
         .exit_code = -1,
     };
-    if (request != NULL && json_object_object_length(request) == 2 &&
+    if (request != NULL &&
         json_object_object_get_ex(request, "target", &target) &&
         json_object_is_type(target, json_type_string) &&
         strlen(json_object_get_string(target)) == (size_t)json_object_get_string_len(target) &&
@@ -54,8 +57,45 @@ int main(void)
         json_object_is_type(timeout, json_type_int) &&
         json_object_get_int64(timeout) >= 1 &&
         json_object_get_int64(timeout) <= COMMAND_TIMEOUT_MAX_MS && !cancelled) {
-        command_diagnose(json_object_get_string(target), (unsigned)json_object_get_int(timeout),
-                         &cancelled, &result);
+        const char *name = json_object_get_string(target);
+        unsigned milliseconds = (unsigned)json_object_get_int(timeout);
+        int fields = json_object_object_length(request);
+        if (strcmp(name, "process_detail") == 0 && fields == 3) {
+            json_object *pid = json_object_object_get(request, "pid");
+            if (pid != NULL && json_object_is_type(pid, json_type_int) &&
+                json_object_get_int64(pid) > 0 && json_object_get_int64(pid) <= 2147483647) {
+                char number[24];
+                snprintf(number, sizeof(number), "%lld", (long long)json_object_get_int64(pid));
+                char *arguments[] = {
+                    "ps",
+                    "-p",
+                    number,
+                    "-o",
+                    "pid,ppid,stat,pcpu,pmem,etimes,comm",
+                    NULL,
+                };
+                command_run("/usr/bin/ps", arguments, milliseconds, &cancelled, &result);
+            }
+        } else if (strcmp(name, "listeners") == 0 && fields == 3) {
+            json_object *protocol = json_object_object_get(request, "protocol");
+            if (protocol != NULL && json_object_is_type(protocol, json_type_string)) {
+                const char *value = json_object_get_string(protocol);
+                const char *flag = NULL;
+                if (strcmp(value, "tcp") == 0) {
+                    flag = "-ltn";
+                } else if (strcmp(value, "udp") == 0) {
+                    flag = "-lun";
+                } else if (strcmp(value, "all") == 0) {
+                    flag = "-ltun";
+                }
+                if (flag != NULL && strlen(value) == (size_t)json_object_get_string_len(protocol)) {
+                    char *arguments[] = {"ss", (char *)flag, NULL};
+                    command_run("/usr/bin/ss", arguments, milliseconds, &cancelled, &result);
+                }
+            }
+        } else if (fields == 2) {
+            command_diagnose(name, milliseconds, &cancelled, &result);
+        }
     }
     if (request != NULL) {
         json_object_put(request);

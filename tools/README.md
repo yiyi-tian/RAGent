@@ -47,3 +47,9 @@ Python工具在仓库根目录通过`.venv/bin/python -m tools.<模块名> --hel
 它们是维护工具，不保证全新克隆后直接运行。新设备应使用`ragent-manual import`
 或部署脚本自行入库，不需要历史缓存或实验组装工具。质量口径和限制见
 [多粒度验收](../docs/rag-evaluation-v4.md)。
+
+`validate_cmd.py`执行真实DeepSeek CMD验收，使用独立持久预算账本（80次模型、40次Embedding，
+失败调用也计入）。precheck为两条诊断冒烟，formal为冻结的12条自然语言用例；fix可使用
+`--case`选择已有用例，13/14是针对已入库ps/ls手册的检索加诊断补充验证。
+仅在明确允许云端调用时运行；不要删除或重置账本来重复付费测试。使用方式与本轮结果见
+[CMD验证](../docs/testing.md#cmd沙箱与真实模型验证)。

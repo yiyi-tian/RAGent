@@ -472,10 +472,10 @@ static void print_help(void)
     puts("/agent [问题]  Agent 自动选择可用工具\n"
          "/chat [问题]   模型对话，不调用工具\n"
          "/rag [问题]    检索 Linux 手册后回答，并显示来源\n"
-         "/cmd [问题]    调用只读诊断工具并解释结果\n"
+         "/cmd [问题]    调用已启用的操作工具并解释结果\n"
          "不带问题时切换模式；带问题时仅发送本次请求。能力取决于服务端配置。\n"
          "/back 返回 Agent 模式；/help 帮助；/status 网络检查；/clear 清屏；/exit 退出\n"
-         "/list 在 CMD 模式显示诊断工具说明。");
+         "/list 在 CMD 模式显示操作工具说明。");
 }
 
 static int repl(Client *client, const Options *options)
@@ -602,10 +602,11 @@ static int repl(Client *client, const Options *options)
             }
         } else if (command_length == strlen("/list") &&
                    memcmp(line + command_start, "/list", command_length) == 0) {
-            puts(mode == CLIENT_MODE_CMD ? "diagnose(target=memory|disk|processes)：\n"
-                                         "内存、根目录磁盘与进程只读诊断。\n"
-                                         "是否读取实际指标由服务端 --commands local 设置。"
-                                         : "请先进入 /cmd 模式。");
+            puts(mode == CLIENT_MODE_CMD ?
+                 "只读诊断：内存、根目录磁盘、进程、负载、指定PID及监听端口。\n"
+                 "sandbox配置还支持临时工作区：列出、读写、建目录、复制、移动和删除空目录/文件。\n"
+                 "可用工具由服务端配置决定；文件随当前连接关闭而删除。\n"
+                 "不支持任意Shell或修改宿主机。" : "请先进入 /cmd 模式。");
         } else {
             puts("未知命令，输入 /help 查看帮助。");
         }

@@ -29,7 +29,7 @@ static void initialize_result(CommandResult *result)
     result->exit_code = -1;
 }
 
-static int collect_output(int fd, CommandResult *result, bool *eof)
+static int collect_output(int fd, CommandResult *result, bool *eof, size_t limit)
 {
     char buffer[4096];
     ssize_t count = read(fd, buffer, sizeof(buffer));
@@ -40,7 +40,7 @@ static int collect_output(int fd, CommandResult *result, bool *eof)
     if (count < 0) {
         return errno == EINTR || errno == EAGAIN ? 0 : -1;
     }
-    size_t available = COMMAND_OUTPUT_LIMIT - result->output_length;
+    size_t available = limit - result->output_length;
     size_t copied = (size_t)count < available ? (size_t)count : available;
     memcpy(result->output + result->output_length, buffer, copied);
     result->output_length += copied;
@@ -52,43 +52,48 @@ static int collect_output(int fd, CommandResult *result, bool *eof)
     return 0;
 }
 
-int command_run(const char *path, char *const argv[], unsigned timeout_ms,
-                const volatile sig_atomic_t *cancelled, CommandResult *result)
+int command_capture(const char *path, char *const argv[], const char *input, size_t input_length,
+                    size_t output_limit, unsigned timeout_ms,
+                    const volatile sig_atomic_t *cancelled, CommandResult *result)
 {
     initialize_result(result);
     int64_t started = monotonic_ms();
-    if (started < 0 || *cancelled) {
+    if (started < 0 || *cancelled || output_limit > COMMAND_CAPTURE_LIMIT) {
         return -1;
     }
     int descriptors[2];
+    int incoming[2];
     if (pipe(descriptors) != 0) {
         return -1;
     }
-    int flags = fcntl(descriptors[0], F_GETFL);
-    if (flags < 0 || fcntl(descriptors[0], F_SETFL, flags | O_NONBLOCK) < 0) {
+    if (pipe(incoming) != 0) {
         close(descriptors[0]);
         close(descriptors[1]);
         return -1;
+    }
+    int read_flags = fcntl(descriptors[0], F_GETFL);
+    int write_flags = fcntl(incoming[1], F_GETFL);
+    if (read_flags < 0 || write_flags < 0 ||
+        fcntl(descriptors[0], F_SETFL, read_flags | O_NONBLOCK) < 0 ||
+        fcntl(incoming[1], F_SETFL, write_flags | O_NONBLOCK) < 0) {
+        goto fail_pipes;
     }
     pid_t parent = getpid();
     pid_t child = fork();
-    if (child == -1) {
-        close(descriptors[0]);
-        close(descriptors[1]);
-        return -1;
+    if (child < 0) {
+        goto fail_pipes;
     }
     if (child == 0) {
         close(descriptors[0]);
-        int input = open("/dev/null", O_RDONLY);
+        close(incoming[1]);
         if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent ||
-            setpgid(0, 0) != 0 || input < 0 || dup2(input, STDIN_FILENO) < 0 ||
+            setpgid(0, 0) != 0 || dup2(incoming[0], STDIN_FILENO) < 0 ||
             dup2(descriptors[1], STDOUT_FILENO) < 0 ||
             dup2(descriptors[1], STDERR_FILENO) < 0) {
             _exit(127);
         }
-        close(input);
+        close(incoming[0]);
         close(descriptors[1]);
-        /* 命令只继承固定环境，不接触Agent的API密钥及代理凭据。 */
         char *environment[] = {
             "PATH=/usr/bin:/bin",
             "LC_ALL=C",
@@ -98,10 +103,11 @@ int command_run(const char *path, char *const argv[], unsigned timeout_ms,
         _exit(127);
     }
     close(descriptors[1]);
-    /* 子进程也设置组，父进程补齐fork后的调度窗口。 */
+    close(incoming[0]);
     if (setpgid(child, child) != 0 && errno != EACCES && errno != ESRCH) {
         kill(child, SIGKILL);
     }
+    size_t sent = 0;
     bool eof = false;
     bool exited = false;
     bool completed = false;
@@ -115,7 +121,22 @@ int command_run(const char *path, char *const argv[], unsigned timeout_ms,
             result->code = "COMMAND_TIMEOUT";
             break;
         }
-        if (!eof && collect_output(descriptors[0], result, &eof) != 0) {
+        if (incoming[1] >= 0) {
+            if (sent < input_length) {
+                ssize_t count = write(incoming[1], input + sent, input_length - sent);
+                if (count > 0) {
+                    sent += (size_t)count;
+                } else if (count < 0 && errno != EAGAIN && errno != EINTR) {
+                    close(incoming[1]);
+                    incoming[1] = -1;
+                }
+            }
+            if (sent == input_length && incoming[1] >= 0) {
+                close(incoming[1]);
+                incoming[1] = -1;
+            }
+        }
+        if (!eof && collect_output(descriptors[0], result, &eof, output_limit) != 0) {
             break;
         }
         if (!exited) {
@@ -132,18 +153,19 @@ int command_run(const char *path, char *const argv[], unsigned timeout_ms,
         }
         int64_t remaining = timeout_ms - (now - started);
         int delay = remaining < 20 ? (int)remaining : 20;
-        struct pollfd descriptor = {
-            .fd = eof ? -1 : descriptors[0],
-            .events = POLLIN | POLLHUP,
-            .revents = 0,
+        struct pollfd watched[] = {
+            {.fd = eof ? -1 : descriptors[0], .events = POLLIN | POLLHUP},
+            {.fd = incoming[1], .events = POLLOUT},
         };
-        if (poll(&descriptor, 1, delay) < 0 && errno != EINTR) {
+        if (poll(watched, 2, delay) < 0 && errno != EINTR) {
             break;
         }
     }
     close(descriptors[0]);
+    if (incoming[1] >= 0) {
+        close(incoming[1]);
+    }
     if (!completed) {
-        /* 包括已退出但后代仍持有输出管道的情况。 */
         kill(-child, SIGKILL);
         if (!exited) {
             kill(child, SIGKILL);
@@ -168,6 +190,19 @@ int command_run(const char *path, char *const argv[], unsigned timeout_ms,
         return 0;
     }
     return -1;
+fail_pipes:
+    close(descriptors[0]);
+    close(descriptors[1]);
+    close(incoming[0]);
+    close(incoming[1]);
+    return -1;
+}
+
+int command_run(const char *path, char *const argv[], unsigned timeout_ms,
+                const volatile sig_atomic_t *cancelled, CommandResult *result)
+{
+    return command_capture(path, argv, NULL, 0, COMMAND_OUTPUT_LIMIT,
+                           timeout_ms, cancelled, result);
 }
 
 int command_diagnose(const char *target, unsigned timeout_ms,
@@ -179,6 +214,10 @@ int command_diagnose(const char *target, unsigned timeout_ms,
     if (timeout_ms == 0 || timeout_ms > COMMAND_TIMEOUT_MAX_MS) {
         initialize_result(result);
         return -1;
+    }
+    char *load[] = {"uptime", NULL};
+    if (strcmp(target, "load") == 0) {
+        return command_run("/usr/bin/uptime", load, timeout_ms, cancelled, result);
     }
     if (strcmp(target, "memory") == 0) {
         return command_run("/usr/bin/free", memory, timeout_ms, cancelled, result);

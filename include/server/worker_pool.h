@@ -31,6 +31,10 @@ bool worker_pool_submit(WorkerPool *pool, WorkItem *item);
 bool worker_pool_take(WorkerPool *pool, WorkItem *item);
 bool worker_pool_has_results(WorkerPool *pool);
 void worker_pool_destroy(WorkerPool *pool);
+/* 沙箱模式复用一个固定工作线程同步快照，不增加线程总量。 */
+bool worker_pool_enable_sessions(WorkerPool *pool);
+bool worker_pool_sync_sessions(WorkerPool *pool, json_object *snapshot, uint64_t sequence);
+bool worker_pool_wait_sessions(WorkerPool *pool, uint64_t sequence, unsigned timeout_ms);
 #ifdef RAGENT_TESTING
 unsigned worker_pool_test_waiting_results(WorkerPool *pool);
 #endif

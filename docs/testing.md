@@ -18,7 +18,7 @@ GitHub Actions在push及pull request时执行同范围的语法、类型、格�
 使用Mock和本地受控接口，无需配置云端密钥。检查失败须修复后再交付；分支保护仍由仓库管理员配置。
 
 CTest 包含线程池背压、部署脚本、RAG、并发、网络、Agent、固定工作进程和
-独立 C 负载发生器和只读执行器共九项。
+独立 C 负载发生器、执行器及文件工作区共十项。
 Agent 测试依赖已安装的项目及
 Python 运行依赖；依赖不齐时 CMake 会提示未启用，不能将其当作完整验收。
 网络测试仅需 Python 标准库，服务与集成测试使用动态端口。Agent 测试串行运行，
@@ -80,7 +80,7 @@ wheel已重新构建并核对固定工作进程模块和uvloop依赖；项目依
 来源与证据质量见[来源级评测](rag-evaluation-v1.md)及
 [证据块评测](rag-evidence-v1.md)。
 
-首批只读命令已通过真实C执行器验证，尚无写操作或沙箱隔离。真实千在途已完成1000/1000成功，但吞吐8.822请求/秒，
+诊断与连接临时文件工具已接入真实C组件及rootless容器，验证范围见下文。真实千在途已完成1000/1000成功，但吞吐8.822请求/秒，
 本轮不再追求9请求/秒；uvloop版本未重新进行真实云端千请求测试，详见
 [高并发配置与测量](performance-concurrency.md)。客户端没有跨请求
 历史与 Tab 补全。Docker 已启用开机启动，Qdrant 可用；该启动配置的再次宿主机重启
@@ -159,4 +159,50 @@ Agent组覆盖实际free/df/ps、拒绝未知操作与嵌入NUL、非法执行�
 固定工作进程组增加四进程local命令模式验证。测试使用受控模型，不调用云端。
 本轮通过sdist重新构建wheel，确认包含ragent.tools；不直接复用旧build/lib中的打包缓存。
 Python包不包含C执行器二进制，安装后须提供独立构建的执行器。
-本轮尚未进行真实DeepSeek命令验收，不把受控模型结果描述为真实模型已通过。
+真实DeepSeek的CMD结果见下节，不将受控测试替代真实模型验收。
+
+
+## CMD沙箱与真实模型验证
+
+在已部署独立rootless服务和镜像的本机运行：
+
+```bash
+RAGENT_TEST_SANDBOX=1 .venv/bin/python -W error::RuntimeWarning -m unittest discover \
+    -s tests/agent -p test_workspace.py -v
+```
+
+沙箱测试默认不加入云端依赖；未设置该环境变量时显式跳过，不能将CTest通过视为容器验收。
+本机实际执行7项测试：顺序CRUD与模式授权、8工作区容量与跨连接隔离、路径拒绝、
+执行失败后关闭工作区且只读仍可用、四Python进程共享工作区、TCP身份防伪造及
+正常断连/前端强杀清理，以及非法参数正文不入日志。新容器内探针检查实际cgroup资源值、UID、seccomp、
+capabilities、只读根、tmpfs大小与挂载标志，并实际验证外部网络不可达。
+C文件单元测试另覆盖符号链接、硬链接、原子拒绝覆盖、128项配额与分页。
+
+付费验收工具自行启动临时端口C/Python服务、连接现有Qdrant，不更改知识库或常规服务：
+
+```bash
+set -a
+source .env
+set +a
+.venv/bin/python -m tools.validate_cmd --phase precheck \
+    --output artifacts/cmd-validation/precheck.json
+.venv/bin/python -m tools.validate_cmd --phase formal \
+    --output artifacts/cmd-validation/formal.json
+```
+
+账本固定为`artifacts/cmd-validation/budget.json`，总上限80次模型、40次Embedding；
+precheck/formal/fix模型额度分别16/48/16，调用前计数，失败和预留不回退，不自动重试。
+报告中的passed检查实际工具及状态，最终文本与证据仍须人工核查。
+
+2026-11-12本机正式12条用例覆盖诊断、检索组合、持续文件工作流、第二客户端隔离与越权拒绝。
+执行分支均满足预期；其中一次更新流程在写入并读取成功后触及模型轮数限制，
+调整工具结果中的真实执行/committed语义后，创建、覆盖和读取两条真实复测均得到完整说明。
+该调整未提高每请求最多4次模型调用的上限。
+正式用例中df/free未检索到对应手册，模型说明证据不足；该结果只证明失败如实反馈，
+不能视为这些手册的答案质量达标。ps/ls检索加诊断的两条补充用例均命中对应手册并完成实际诊断，人工核对参数解释与来源一致。
+累计使用45/80次模型、4/40次Embedding（precheck 4次模型，formal 31次，fix 10次）。
+
+原始报告、预算与构建日志保留在忽略的`artifacts/cmd-validation/`和
+`artifacts/cmd-review-20261112/`，不提交运行日志、诊断快照或状态文件。
+本轮不执行新的吞吐压测，也未验证另一台设备部署；文件为连接级临时数据，不提供下载、
+跨连接历史、Shell或宿主机系统写入。

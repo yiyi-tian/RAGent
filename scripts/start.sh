@@ -37,6 +37,13 @@ fi
 set -a
 source .env
 set +a
+commands_mode=${RAGENT_COMMANDS:-local}
+server_arguments=()
+case "$commands_mode" in
+    mock|local) ;;
+    sandbox) server_arguments+=(--sandbox-sessions) ;;
+    *) echo 'RAGENT_COMMANDS须为mock、local或sandbox。' >&2; exit 1 ;;
+esac
 for name in RAGENT_API_KEY RAGENT_MODEL RAGENT_BASE_URL \
     RAGENT_EMBEDDING_API_KEY RAGENT_EMBEDDING_BASE_URL; do
     if [[ -z ${!name:-} ]]; then
@@ -181,6 +188,18 @@ except (ServiceError, ValueError, KeyError, TypeError) as error:
 PYTHON
 fi
 
+if [[ $commands_mode == sandbox ]]; then
+    if [[ $deploy == true ]]; then
+        bash scripts/setup-sandbox.sh
+    fi
+    for executable in ./build/ragent-sandbox ./build/ragent-file-worker; do
+        if [[ ! -x $executable ]]; then
+            echo "缺少 $executable，请使用 --deploy 构建沙箱。" >&2
+            exit 1
+        fi
+    done
+fi
+
 mkdir -p artifacts
 run_dir=$(mktemp -d "$project_dir/artifacts/deploy-XXXXXX")
 agent_pid=''
@@ -240,7 +259,7 @@ PY
     return 1
 }
 
-.venv/bin/ragent-server --model deepseek --retrieval qdrant --commands local --port "$agent_port" \
+.venv/bin/ragent-server --model deepseek --retrieval qdrant --commands "$commands_mode" --port "$agent_port" \
     >"$run_dir/agent.log" 2>&1 &
 agent_pid=$!
 wait_for_service "$agent_pid" "$agent_port" "$run_dir/agent.log"
@@ -249,7 +268,7 @@ if ! curl --noproxy '*' --fail --silent --show-error --max-time 3 \
     echo "Agent尚未就绪，请检查配置与检索依赖，日志：$run_dir/agent.log" >&2
     exit 1
 fi
-./build/agent-server --config config/agent.json >"$run_dir/server.log" 2>&1 &
+./build/agent-server --config config/agent.json "${server_arguments[@]}" >"$run_dir/server.log" 2>&1 &
 server_pid=$!
 wait_for_service "$server_pid" "$server_port" "$run_dir/server.log"
 

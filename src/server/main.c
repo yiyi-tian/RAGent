@@ -16,6 +16,8 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/resource.h>
+#include <sys/random.h>
+#include <time.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -34,6 +36,7 @@ typedef struct {
     unsigned worker_threads;
     unsigned task_capacity;
     unsigned result_capacity;
+    bool sandbox_sessions;
 } Options;
 
 typedef struct OutputChunk {
@@ -64,6 +67,11 @@ typedef struct {
     size_t connection_count;
     uint64_t next_connection_id;
     WorkerPool *workers;
+    char instance[33];
+    char process_start[32];
+    char boot[64];
+    uint64_t snapshot_sequence;
+    time_t snapshot_time;
 } Server;
 
 static void set_error(char *buffer, size_t capacity, const char *message)
@@ -240,6 +248,10 @@ static int parse_options(int argc, char **argv, Options *options, char *error, s
     }
     for (int index = 1; index < argc; ++index) {
         const char *argument = argv[index];
+        if (strcmp(argument, "--sandbox-sessions") == 0) {
+            options->sandbox_sessions = true;
+            continue;
+        }
         if (index + 1 >= argc) {
             snprintf(error, error_size, "参数缺少值: %s", argument);
             return -1;
@@ -593,6 +605,85 @@ static int ensure_file_limit(const Options *options)
     return setrlimit(RLIMIT_NOFILE, &limits);
 }
 
+static bool session_identity(Server *server)
+{
+    unsigned char nonce[16];
+    if (getrandom(nonce, sizeof(nonce), 0) != sizeof(nonce)) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(nonce); ++i) {
+        snprintf(server->instance + i * 2, 3, "%02x", nonce[i]);
+    }
+    FILE *file = fopen("/proc/self/stat", "re");
+    char line[4096];
+    if (file == NULL) {
+        return false;
+    }
+    char *read = fgets(line, sizeof(line), file);
+    fclose(file);
+    char *p = read == NULL ? NULL : strrchr(line, ')');
+    if (p == NULL) {
+        return false;
+    }
+    char *context = NULL;
+    char *field = strtok_r(p + 2, " ", &context);
+    for (int number = 3; field != NULL && number < 22; ++number) {
+        field = strtok_r(NULL, " ", &context);
+    }
+    if (field == NULL || strlen(field) >= sizeof(server->process_start)) {
+        return false;
+    }
+    strcpy(server->process_start, field);
+    file = fopen("/proc/sys/kernel/random/boot_id", "re");
+    if (file == NULL) {
+        return false;
+    }
+    read = fgets(server->boot, sizeof(server->boot), file);
+    fclose(file);
+    if (read == NULL) {
+        return false;
+    }
+    server->boot[strcspn(server->boot, "\n")] = '\0';
+    return true;
+}
+
+static uint64_t publish_sessions(Server *server)
+{
+    json_object *snapshot = json_object_new_object();
+    json_object *active = json_object_new_array();
+    if (snapshot == NULL || active == NULL) {
+        if (snapshot != NULL) {
+            json_object_put(snapshot);
+        }
+        if (active != NULL) {
+            json_object_put(active);
+        }
+        return 0;
+    }
+    for (size_t i = 0; i < server->options.max_connections; ++i) {
+        if (server->connections[i].socket_fd >= 0) {
+            char id[32];
+            snprintf(id, sizeof(id), "%llu", (unsigned long long)server->connections[i].id);
+            json_object_array_add(active, json_object_new_string(id));
+        }
+    }
+    char through[32];
+    snprintf(through, sizeof(through), "%llu",
+             (unsigned long long)(server->next_connection_id - 1));
+    uint64_t sequence = ++server->snapshot_sequence;
+    json_object_object_add(snapshot, "server_id", json_object_new_string(server->instance));
+    json_object_object_add(snapshot, "pid", json_object_new_int64(getpid()));
+    json_object_object_add(snapshot, "start", json_object_new_string(server->process_start));
+    json_object_object_add(snapshot, "boot", json_object_new_string(server->boot));
+    json_object_object_add(snapshot, "sequence", json_object_new_int64((int64_t)sequence));
+    json_object_object_add(snapshot, "through", json_object_new_string(through));
+    json_object_object_add(snapshot, "active", active);
+    bool ok = worker_pool_sync_sessions(server->workers, snapshot, sequence);
+    json_object_put(snapshot);
+    server->snapshot_time = time(NULL);
+    return ok ? sequence : 0;
+}
+
 static int server_init(Server *server, const Options *options)
 {
     memset(server, 0, sizeof(*server));
@@ -653,6 +744,22 @@ static int server_init(Server *server, const Options *options)
     if (!server->workers) {
         return -1;
     }
+    if (options->sandbox_sessions) {
+        if (options->max_connections > 4096) {
+            errno = EINVAL;
+            return -1;
+        }
+        if (!session_identity(server) || agent_http_enable_sessions(server->instance) != 0 ||
+            !worker_pool_enable_sessions(server->workers)) {
+            errno = EINVAL;
+            return -1;
+        }
+        uint64_t sequence = publish_sessions(server);
+        if (sequence == 0 || !worker_pool_wait_sessions(server->workers, sequence, 6000)) {
+            errno = ECONNREFUSED;
+            return -1;
+        }
+    }
     server->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (server->epoll_fd < 0) {
         return -1;
@@ -671,6 +778,13 @@ static void server_destroy(Server *server)
          ++index) {
         if (server->connections[index].socket_fd >= 0) {
             connection_destroy(&server->connections[index]);
+        }
+    }
+    if (server->options.sandbox_sessions && server->workers != NULL &&
+        server->instance[0] != '\0') {
+        uint64_t sequence = publish_sessions(server);
+        if (sequence != 0) {
+            worker_pool_wait_sessions(server->workers, sequence, 6000);
         }
     }
     worker_pool_destroy(server->workers);
@@ -738,7 +852,11 @@ static int server_run(Server *server)
     fflush(stdout);
     struct epoll_event events[64];
     while (true) {
-        const int event_count = epoll_wait(server->epoll_fd, events, 64, -1);
+        if (server->options.sandbox_sessions && time(NULL) != server->snapshot_time) {
+            publish_sessions(server);
+        }
+        int wait_ms = server->options.sandbox_sessions ? 1000 : -1;
+        const int event_count = epoll_wait(server->epoll_fd, events, 64, wait_ms);
         if (event_count < 0) {
             if (errno == EINTR) {
                 continue;
@@ -807,7 +925,8 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
         puts("agent-server [--config PATH] [--host IPv4] [--port 0..65535]\n"
              "             [--max-connections N] [--max-pending-bytes N]\n"
-             "             [--worker-threads N] [--task-capacity N] [--result-capacity N]");
+             "             [--worker-threads N] [--task-capacity N] [--result-capacity N]\n"
+             "             [--sandbox-sessions]");
         return 0;
     }
     Options options;

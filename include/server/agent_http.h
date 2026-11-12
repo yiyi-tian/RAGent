@@ -11,5 +11,9 @@ int agent_http_configure(const char *url, unsigned timeout_ms);
 int agent_http_request(const Frame *request, unsigned remaining_ms, Frame *response);
 /* lifetime为调用期间有效的借用引用；失效时终止上游HTTP传输。 */
 int agent_http_request_controlled(const Frame *request, unsigned remaining_ms,
-                                  const WorkerLifetime *lifetime, Frame *response);
+                                  const WorkerLifetime *lifetime, uint64_t connection_id,
+                                  Frame *response);
+/* 只在启动前设置实例标识；快照同步仅由维护工作线程调用。 */
+int agent_http_enable_sessions(const char *server_id);
+bool agent_http_sync_sessions(const char *snapshot);
 #endif

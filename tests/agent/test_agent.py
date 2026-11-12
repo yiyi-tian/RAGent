@@ -2,8 +2,8 @@
 
 import asyncio
 import unittest
-from langchain_core.messages import AIMessage
-from ragent.agent import answer
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from ragent.agent import MockModel, answer
 from ragent.errors import ModelError
 
 
@@ -16,6 +16,13 @@ class Script:
 
 
 class AgentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_mock_uses_question_after_system_instruction(self):
+        response = await MockModel().ainvoke(
+            [SystemMessage(content="工作区规则"), HumanMessage(content="如何使用epoll")],
+            ["search_linux_manual"],
+        )
+        self.assertEqual(response.tool_calls[0]["args"]["query"], "如何使用epoll")
+
     async def test_modes(self):
         for mode, count in [("chat", 0), ("rag", 1), ("cmd", 1), ("agent", 2)]:
             result = await answer("测试", mode)

@@ -9,6 +9,7 @@
 
 static char endpoint[1024];
 static unsigned timeout = 12000;
+static char session_server_id[33];
 typedef struct {
     unsigned char *data;
     size_t length;
@@ -19,6 +20,7 @@ int agent_http_configure(const char *url, unsigned timeout_ms)
     if (strlen(url) >= sizeof(endpoint)) {
         return -1;
     }
+    session_server_id[0] = '\0';
     strcpy(endpoint, url);
     timeout = timeout_ms;
     return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK ? 0 : -1;
@@ -54,11 +56,12 @@ static int transfer_progress(void *context, curl_off_t download_total, curl_off_
 
 int agent_http_request(const Frame *request, unsigned remaining_ms, Frame *response)
 {
-    return agent_http_request_controlled(request, remaining_ms, NULL, response);
+    return agent_http_request_controlled(request, remaining_ms, NULL, 0, response);
 }
 
 int agent_http_request_controlled(const Frame *request, unsigned remaining_ms,
-                                  const WorkerLifetime *lifetime, Frame *response)
+                                  const WorkerLifetime *lifetime, uint64_t connection_id,
+                                  Frame *response)
 {
     if (remaining_ms == 0) {
         return frame_make_error(request->request_id, "UPSTREAM_TIMEOUT", "请求时限已到", response);
@@ -89,6 +92,16 @@ int agent_http_request_controlled(const Frame *request, unsigned remaining_ms,
     snprintf(id, sizeof(id), "%llu", (unsigned long long)request->request_id);
     json_object_object_add(body, "request_id", json_object_new_string(id));
     json_object_object_add(body, "mode", json_object_new_string(modes[request->type]));
+    // 外部TCP扩展字段不能选择或伪造工作区身份。
+    json_object_object_del(body, "session");
+    if (session_server_id[0] != '\0' && connection_id >= 3) {
+        char connection[32];
+        snprintf(connection, sizeof(connection), "%llu", (unsigned long long)connection_id);
+        json_object *session = json_object_new_object();
+        json_object_object_add(session, "server_id", json_object_new_string(session_server_id));
+        json_object_object_add(session, "connection_id", json_object_new_string(connection));
+        json_object_object_add(body, "session", session);
+    }
     unsigned budget_ms = remaining_ms < timeout ? remaining_ms : timeout;
     CURL *curl = curl_easy_init();
     Buffer buffer = {0};
@@ -168,4 +181,50 @@ int agent_http_request_controlled(const Frame *request, unsigned remaining_ms,
                                                                : "UPSTREAM_UNAVAILABLE",
                             "Agent 服务不可用或响应非法",
                             response);
+}
+
+int agent_http_enable_sessions(const char *server_id)
+{
+    size_t size = strlen(endpoint);
+    if (strlen(server_id) != 32 || size < 6 || strcmp(endpoint + size - 6, "/agent") != 0 ||
+        (strncmp(endpoint, "http://127.0.0.1:", 17) != 0 &&
+         strncmp(endpoint, "http://localhost:", 17) != 0)) {
+        return -1;
+    }
+    strcpy(session_server_id, server_id);
+    return 0;
+}
+
+bool agent_http_sync_sessions(const char *snapshot)
+{
+    char url[1100];
+    size_t prefix = strlen(endpoint) - 6;
+    snprintf(url, sizeof(url), "%.*s/internal/sessions/sync", (int)prefix, endpoint);
+    CURL *curl = curl_easy_init();
+    struct curl_slist *headers = curl_slist_append(NULL, "Content-Type: application/json");
+    Buffer buffer = {0};
+    CURLcode status = CURLE_FAILED_INIT;
+    long http_status = 0;
+    if (curl != NULL && headers != NULL) {
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, snapshot);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 5000L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 1000L);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, receive_body);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
+        status = curl_easy_perform(curl);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
+    }
+    json_object *body = status == CURLE_OK ? json_parse_object(buffer.data, buffer.length) : NULL;
+    bool ok = http_status == 200 && body != NULL &&
+              json_object_get_boolean(json_object_object_get(body, "ok"));
+    if (body != NULL) {
+        json_object_put(body);
+    }
+    free(buffer.data);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return ok;
 }

@@ -1,6 +1,6 @@
 # RAGent 模块接口
 
-本文描述当前网络、Agent、模型与检索接口。首批只读诊断通过独立C执行器调用；写操作与沙箱接口尚待确定。
+本文描述当前网络、Agent、模型与检索接口。诊断与沙箱管理通过独立C组件执行；文件操作只作用于连接临时工作区。
 TCP 帧格式以[协议规范](protocol.md)为准。
 
 ## C 网络与资源所有权
@@ -63,7 +63,7 @@ RAG 和已调用检索的 AGENT 会加入只依据证据作答的
 |---|---|
 | CHAT | 无工具 |
 | RAG | 编排层强制检索后提供证据，不插入伪造的模型工具调用 |
-| CMD | diagnose，target为memory、disk或processes |
+| CMD | 按配置提供诊断与工作区工具，见下文 |
 | AGENT | search_linux_manual 与diagnose |
 
 每请求最多 4 次模型调用，每轮最多 4 个工具。服务总时限默认 120 秒，可通过
@@ -119,7 +119,8 @@ CLI在线服务持有的模型客户端、检索线程池与执行器在应用�
 Python使用`asyncio.create_subprocess_exec`启动独立`ragent-executor`，每进程处理一次请求后退出。
 stdin为不超过4095字节的UTF-8 JSON对象，写入后关闭；stdout为一个JSON结果；stderr不作为工具输出。
 请求仅接受`{"target":"memory","timeout_ms":3000}`，timeout_ms为1至3000的整数，取请求剩余预算。
-`target`只允许memory、disk、processes，固定程序与参数统一维护在`src/executor/command.c`。
+`target`支持memory、disk、processes、load；进程详情使用process_detail及正整数pid，
+监听端口使用listeners及protocol=tcp|udp|all。程序与参数在C端固定，不接受任意命令。
 没有任意路径、命令字符串、环境变量或Shell参数接口。业务不进入协议编解码模块。
 
 结果为`ok`布尔值、`code`字符串、`output`字符串、`exit_code`整数和`signal`整数。
@@ -128,10 +129,55 @@ COMMAND_OUTPUT_LIMIT或COMMAND_FAILED。失败输出不作为成功证据回填�
 其他工具成功结果仍可继续使用。模型实际tool_call_id与ToolMessage一一对应。
 
 C执行器使用单调时钟、非阻塞管道和有界等待，输出最多16384字节，超限直接失败；不截断成成功。
-命令独立进程组，超时和取消时杀死整组并waitpid回收直接子进程；子进程stdin为/dev/null，
+命令独立进程组，超时和取消时杀死整组并waitpid回收直接子进程；子进程stdin为已关闭写端的管道，
 只继承固定PATH和LC_ALL，不继承云端密钥。Python取消时通知C执行器清理，退出时回收活动任务。
 全组命令最多4个并发，按固定工作进程数均分；等待名额也计入请求总时限。
 
-`--commands mock|local`默认mock；local模式启动时校验执行器可用，/ready也检查本机执行器文件，
+`--commands mock|local|sandbox`默认mock；local模式启动时校验执行器可用，/ready也检查本机执行器文件，
 不执行诊断或调用云端。`--executor`或RAGENT_EXECUTOR_PATH指定路径，默认build/ragent-executor。
-通过create_app注入的共享执行器与模型、检索器一样由调用者关闭。当前没有写操作或沙箱能力。
+通过create_app注入的共享执行器与模型、检索器一样由调用者关闭。
+
+## 连接临时工作区接口
+
+`sandbox`配置额外提供下列结构化LangChain工具；CMD和AGENT可调用，CHAT和RAG不提供。
+
+| 工具 | 参数 | 行为 |
+|---|---|---|
+| workspace_list | path=".", offset=0 | 名称排序，每页32项，返回next_offset |
+| workspace_read | path | 读取最多16 KiB UTF-8文本 |
+| workspace_write | path, content, overwrite=false | 原子提交，默认拒绝覆盖 |
+| workspace_mkdir | path | 创建目录，父目录须存在 |
+| workspace_copy | source, destination | 复制普通文本文件，拒绝覆盖 |
+| workspace_move | source, destination | 移动文件或目录，拒绝覆盖 |
+| workspace_remove | path | 删除普通文件或空目录，禁止递归及根目录删除 |
+
+路径按UTF-8字节限制为512、每段128、最多16段；拒绝绝对路径、`..`、控制字符、NUL、
+符号链接及保留前缀`.ragent-`。C使用openat2的BENEATH和NO_SYMLINKS/NO_MAGICLINKS落实边界。
+每工作区最多128项；读写不接受二进制/NUL，不执行文本或脚本。
+同轮包含文件工具时按模型调用顺序执行；同一连接跨请求由C锁串行，其他连接可并行。
+不自动重试写操作；同请求遇到unknown后停止后续写入，重复相同写调用也拒绝。
+
+C前端使用随机实例ID及稳定连接ID覆盖外部session字段；公共TCP v1保持不变。
+Python内部HTTP接收`session={server_id,connection_id}`，模型参数不含此身份。
+`--sandbox-sessions`要求至少2个C工作线程，其中1个专门维护连接；仍属于固定线程总数。
+该线程每秒将`server_id,pid,start,boot,sequence,through,active`快照发送到
+`/internal/sessions/sync`；最多1个在途和1个最新待发快照。
+through为已接受的最大连接ID，新连接可先于下一快照执行；旧sequence不覆盖新快照。
+维护失联超过10秒暂停文件操作，不按心跳超时猜测删除仍活着的连接；PID、启动ticks和boot ID
+确认前端死亡后可回收。正常断连后由快照清理，后台每2秒对账；无故障环境目标10秒内。
+内部HTTP仅绑定本机回环地址，不应直接暴露给客户端。
+
+Python启动独立`ragent-sandbox --socket PATH --state FILE`，每次stdin一个JSON请求，stdout一个结果。
+操作为probe、sync或invoke；invoke携带上述session、tool、args及受信任request_id/operation_id。
+结果沿用只读结果字段，新增effect=none|committed|unknown，表示未提交、已提交、结果未知。
+执行中断或非法响应关闭工作区；同一连接不能重建，须重新连接，不承诺多步骤事务回滚。
+C通过固定Docker argv启动容器及`ragent-file-worker`，后者只打开固定`/workspace`。
+所有文件读取及权限落实均在C边界，不存在宿主机裸执行备用路径。
+
+沙箱使用独立rootless Docker socket，固定镜像`ragent-file-sandbox:v1`在启动时解析为镜像ID。
+新容器必须通过真实隔离探针：UID/GID1000、capabilities清空、no-new-privileges、seccomp、
+只读根、无外部网络，以及cgroup限制128 MiB/0.5 CPU/32进程。
+`/workspace`为16 MiB tmpfs，nosuid/nodev/noexec，不挂载宿主机目录或Docker socket。
+最多8个连接工作区；全组诊断和文件工具共用4个业务执行槽，维护不占用业务槽。
+状态文件和审计由服务用户持有，目录0700、文件0600；管理进程通过flock协调多进程。
+审计只保留标识、工具、受限路径、结果、耗时与退出信息，不记录正文或完整工具输出；8 MiB轮转共3份。
