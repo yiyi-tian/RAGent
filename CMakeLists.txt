@@ -14,7 +14,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(CURL REQUIRED IMPORTED_TARGET libcurl)
 pkg_check_modules(JSONC REQUIRED IMPORTED_TARGET json-c)
 
-add_library(agent-common src/protocol/protocol.c src/net/socket.c)
+add_library(agent-common src/protocol/protocol.c src/protocol/tool_validate.c src/protocol/cmd_exec.c src/net/socket.c)
 target_include_directories(agent-common PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_link_libraries(agent-common PUBLIC PkgConfig::JSONC)
 target_compile_options(agent-common PRIVATE -Wall -Wextra -Wpedantic)
