@@ -143,6 +143,8 @@ class MockModel:
             args: dict[str, object]
             if name == "search_linux_manual":
                 args = {"query": query}
+            elif name == "run_command":
+                args = {"command": "pwd", "cwd": "."}
             elif name == "diagnose":
                 args = {"target": "memory"}
             elif name == "inspect_process":

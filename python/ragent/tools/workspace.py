@@ -79,7 +79,7 @@ class SandboxExecutor(ReadOnlyExecutor):
 
 
 async def create_executor(mode: str, path: str, concurrency: int = 4):
-    if mode == "mock":
+    if mode in ("mock", "client"):
         return None
     if mode == "local":
         return ReadOnlyExecutor(path, concurrency)

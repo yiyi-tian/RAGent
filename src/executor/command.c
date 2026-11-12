@@ -13,13 +13,26 @@
 #include <time.h>
 #include <unistd.h>
 
-static int64_t monotonic_ms(void)
+int64_t command_now_ms(void)
 {
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
         return -1;
     }
     return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+unsigned command_time_left(int64_t deadline, unsigned cap_ms)
+{
+    if (deadline == 0) {
+        return cap_ms;
+    }
+    int64_t now = command_now_ms();
+    if (now < 0 || now >= deadline) {
+        return 0;
+    }
+    int64_t remaining = deadline - now;
+    return remaining < cap_ms ? (unsigned)remaining : cap_ms;
 }
 
 static void initialize_result(CommandResult *result)
@@ -52,13 +65,15 @@ static int collect_output(int fd, CommandResult *result, bool *eof, size_t limit
     return 0;
 }
 
-int command_capture(const char *path, char *const argv[], const char *input, size_t input_length,
-                    size_t output_limit, unsigned timeout_ms,
-                    const volatile sig_atomic_t *cancelled, CommandResult *result)
+static int capture_process(const char *path, char *const argv[], const char *input,
+                            size_t input_length, size_t output_limit, unsigned timeout_ms,
+                            int workspace, CommandMonitor monitor, void *context,
+                            const volatile sig_atomic_t *cancelled, CommandResult *result)
 {
     initialize_result(result);
-    int64_t started = monotonic_ms();
-    if (started < 0 || *cancelled || output_limit > COMMAND_CAPTURE_LIMIT) {
+    int64_t started = command_now_ms();
+    if (started < 0 || *cancelled || output_limit > COMMAND_CAPTURE_LIMIT ||
+        (workspace >= 0 && workspace < 3)) {
         return -1;
     }
     int descriptors[2];
@@ -94,6 +109,10 @@ int command_capture(const char *path, char *const argv[], const char *input, siz
         }
         close(incoming[0]);
         close(descriptors[1]);
+        if (workspace >= 0 &&
+            (dup2(workspace, 3) < 0 || fcntl(3, F_SETFD, 0) != 0)) {
+            _exit(127);
+        }
         char *environment[] = {
             "PATH=/usr/bin:/bin",
             "LC_ALL=C",
@@ -113,8 +132,8 @@ int command_capture(const char *path, char *const argv[], const char *input, siz
     bool completed = false;
     int status = 0;
     while (true) {
-        int64_t now = monotonic_ms();
-        if (*cancelled || now < 0) {
+        int64_t now = command_now_ms();
+        if (*cancelled || now < 0 || (monitor != NULL && !monitor(context))) {
             break;
         }
         if (now - started >= timeout_ms) {
@@ -196,6 +215,32 @@ fail_pipes:
     close(incoming[0]);
     close(incoming[1]);
     return -1;
+}
+
+int command_capture(const char *path, char *const argv[], const char *input, size_t input_length,
+                    size_t output_limit, unsigned timeout_ms,
+                    const volatile sig_atomic_t *cancelled, CommandResult *result)
+{
+    return capture_process(path, argv, input, input_length, output_limit, timeout_ms,
+                           -1, NULL, NULL, cancelled, result);
+}
+
+int command_capture_workspace(const char *path, char *const argv[], const char *input,
+                               size_t input_length, size_t output_limit, unsigned timeout_ms,
+                               int workspace, const volatile sig_atomic_t *cancelled,
+                               CommandResult *result)
+{
+    return capture_process(path, argv, input, input_length, output_limit, timeout_ms,
+                           workspace, NULL, NULL, cancelled, result);
+}
+
+int command_capture_monitored(const char *path, char *const argv[], const char *input,
+                               size_t input_length, size_t output_limit, unsigned timeout_ms,
+                               int workspace, CommandMonitor monitor, void *context,
+                               const volatile sig_atomic_t *cancelled, CommandResult *result)
+{
+    return capture_process(path, argv, input, input_length, output_limit, timeout_ms,
+                           workspace, monitor, context, cancelled, result);
 }
 
 int command_run(const char *path, char *const argv[], unsigned timeout_ms,

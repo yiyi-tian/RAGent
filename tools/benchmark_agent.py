@@ -389,7 +389,7 @@ async def measure(args):
                                     row["mode"] = request_mode
                                     kind = {"chat": 1, "rag": 2, "agent": 4}[request_mode]
                                     writer.write(
-                                        HEADER.pack(0x52414754, 1, kind, len(body), request_id)
+                                        HEADER.pack(0x52414754, 2, kind, len(body), request_id)
                                         + body
                                     )
                                     await writer.drain()
@@ -398,7 +398,7 @@ async def measure(args):
                                     )
                                     if (magic, version, returned) != (
                                         0x52414754,
-                                        1,
+                                        2,
                                         request_id,
                                     ) or length > 1048576:
                                         row["code"] = "PROTOCOL_ERROR"

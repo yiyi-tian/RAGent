@@ -30,12 +30,12 @@ def worker(port, requests):
     with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
         sock.settimeout(10)
         for request_id in range(1, requests + 1):
-            payload = HEADER.pack(0x52414754, 1, 1, len(BODY), request_id) + BODY
+            payload = HEADER.pack(0x52414754, 2, 1, len(BODY), request_id) + BODY
             start = time.monotonic()
             sock.sendall(payload)
             magic, version, kind, length, returned_id = HEADER.unpack(exact(sock, HEADER.size))
             body = json.loads(exact(sock, length))
-            if magic != 0x52414754 or version != 1 or returned_id != request_id or kind != 100:
+            if magic != 0x52414754 or version != 2 or returned_id != request_id or kind != 100:
                 errors += 1
             latencies.append((time.monotonic() - start) * 1000)
     return latencies, errors

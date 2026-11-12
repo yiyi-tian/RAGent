@@ -55,15 +55,4 @@ for attempt in {1..60}; do
     sleep 1
 done
 docker --host "unix://$socket_path" info --format '{{json .SecurityOptions}}'
-if [[ ${1:-} == --daemon-only ]]; then
-    exit 0
-fi
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
-cmake --build build --target ragent-file-worker -j 2
-mkdir -p artifacts
-image_context=$(mktemp -d "$project_dir/artifacts/sandbox-image-XXXXXX")
-trap 'rm -rf -- "$image_context"' EXIT
-python3 scripts/sandbox-image.py "$image_context"
-docker --host "unix://$socket_path" build -f sandbox/Dockerfile \
-    -t ragent-file-sandbox:v1 "$image_context"
-echo '沙箱镜像已构建；启动服务时使用 --commands sandbox。'
+echo 'rootless Docker服务已就绪；命令镜像与客户端使用 scripts/setup-command-runtime.sh 部署。'

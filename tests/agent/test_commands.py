@@ -122,7 +122,7 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
                         reader, writer = await asyncio.open_connection("127.0.0.1", port)
                         try:
                             body = json.dumps({"query": "查看当前实际内存"}).encode()
-                            writer.write(struct.pack("!IHHIQ", 0x52414754, 1, kind, len(body), 1))
+                            writer.write(struct.pack("!IHHIQ", 0x52414754, 2, kind, len(body), 1))
                             writer.write(body)
                             await writer.drain()
                             header = await asyncio.wait_for(reader.readexactly(20), 5)

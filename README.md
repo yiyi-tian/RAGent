@@ -2,7 +2,7 @@
 
 RAGent 是面向 Linux 系统编程课程的多客户端 Agent。C17 客户端通过自定义 TCP
 协议接入 C 网络服务，工作线程通过 HTTP/JSON 调用 Python LangChain Agent。
-Agent 支持 DeepSeek 问答、Linux 手册检索和工具调用；支持独立C执行器只读诊断，以及rootless容器中的连接级临时文件操作。
+Agent 支持 DeepSeek 问答、Linux 手册检索和客户端分级命令执行；写操作须确认后在rootless容器中执行。
 
 ## 一键本机部署
 
@@ -66,7 +66,7 @@ ctest --test-dir build --output-on-failure
 set -a
 source .env
 set +a
-.venv/bin/ragent-server --model deepseek --retrieval qdrant --commands local
+.venv/bin/ragent-server --model deepseek --retrieval qdrant
 ```
 
 另一终端启动 C 服务（保持运行）：
@@ -101,7 +101,7 @@ agent> /exit
 |---|---|
 | CHAT | 直接调用模型，不提供工具 |
 | RAG | 强制先检索 Linux 手册，再交给模型回答并回传来源 |
-| CMD | 模型调用诊断或临时文件工具并解释结果；工具由启动配置选择 |
+| CMD | 模型提出Shell命令，客户端按风险分级确认与执行 |
 | AGENT | 模型自主组合检索、诊断及已启用的文件工具 |
 
 C 请求预算由 agent_timeout_ms 配置，默认 125 秒，从完整请求入队开始，包含排队及
@@ -130,37 +130,11 @@ Python 可通过 `--workers 1..4` 或 `RAGENT_AGENT_WORKERS` 设置固定工作�
 
 ## CMD 工具
 
-默认部署使用 `RAGENT_COMMANDS=local`，提供服务端内存、根目录磁盘、进程快照、负载、
-指定PID状态及TCP/UDP监听端口诊断。固定命令不接受Shell或任意参数，最多3秒、输出16 KiB。
-全组业务工具并发上限4，按1至4个Python工作进程均分。
-手动启动使用 `--commands local`；默认 `--commands mock` 为明确标注的模拟诊断。
-C二进制不包含在Python wheel中，需按构建步骤生成。
-
-需要临时文件操作时，在 `.env` 设置 `RAGENT_COMMANDS=sandbox`，首次执行：
-
-```bash
-bash scripts/start.sh --deploy --skip-import
-```
-
-此步骤额外安装rootless依赖、启动独立用户Docker服务，并从本机C二进制构建最小镜像，
-不切换现有Docker上下文。已完成部署后直接 `bash scripts/start.sh`，不重建镜像。
-也可以单独运行 `bash scripts/setup-sandbox.sh`，然后启动两个服务：
-
-```bash
-.venv/bin/ragent-server --model deepseek --retrieval qdrant --commands sandbox
-./build/agent-server --config config/agent.json --sandbox-sessions
-```
-
-另开终端使用 `./build/agent`，输入 `/cmd 创建notes目录，并在其中创建内容为你好的hello.txt`。
-同一交互连接可继续读取、复制、移动文件或删除文件/空目录；断开后工作区清理，重连不保留。
-`--query`会在请求后断开，因此不适合需要连续操作的文件工作流。
-
-工作区只允许相对路径及UTF-8文本，每文件16 KiB、总计128项、列表每页32项；
-最多8个工作区。文件存放在容器16 MiB tmpfs中，不挂载宿主机业务目录。
-rootless、seccomp、cgroups或镜像不可用时禁止文件操作，固定只读诊断仍可使用。
-不支持任意Shell、执行脚本、宿主机写入及管理员操作。失败后的实际影响会写入操作摘要；
-状态未知时关闭工作区，不能当作回滚或自动重试。接口及资源限制见
-[模块接口](docs/module-interfaces.md#连接临时工作区接口)。
+命令作用于客户端启动目录。只读命令自动执行；写入与向外行动须逐条确认，
+在rootless容器内执行，写入反映到真实工作区，断连后保留。
+首次在客户端设备执行 `bash scripts/setup-command-runtime.sh`，然后在任意任务目录
+运行 `~/.local/bin/ragent`。网络、凭证、SSH和隔离限制见[命令执行说明](docs/command-policy.md)。
+服务端与客户端须同时升级，TCP v2拒绝旧版本。
 
 ## 可选：单次请求
 
@@ -181,10 +155,11 @@ flowchart LR
     A --> R[Linux 手册检索]
     R --> E[百炼 Embedding]
     R --> Q[(Qdrant)]
-    A --> T[C只读执行器]
-    A --> S[C沙箱管理器]
-    S --> D[rootless Docker]
-    D --> F[C文件工具与连接tmpfs]
+    N -->|命令提案| C
+    C --> T[C策略与用户确认]
+    T --> H[宿主机受限只读程序]
+    T --> D[rootless Docker]
+    D --> F[真实工作区挂载]
     P[Python 离线入库] --> Q
 ```
 
@@ -197,7 +172,7 @@ Agent 每请求独立保存消息和工具结果，最多调用模型 4 次，�
 DeepSeek 模型默认并发上限为 32，可用 RAGENT_MODEL_CONCURRENCY 设置。
 检索使用独立的 8 线程池，可用 RAGENT_RETRIEVAL_WORKERS 设置。
 环境示例通过 NO_PROXY 让 DeepSeek 和百炼接口直连；需要代理访问时调整该项。
-对话无跨请求历史和流式输出；文件工作区可在同一TCP连接内跨请求使用，断连后清理。
+对话无跨请求历史和流式输出；工作区固定为客户端启动目录，文件在任务结束后保留。
 知识库包含 8 本手册、1456 个段落或条目检索单元，默认融合两种粒度；质量结果与限制见
 [多粒度验收](docs/rag-evaluation-v4.md)。
 
@@ -210,13 +185,13 @@ DeepSeek 模型默认并发上限为 32，可用 RAGENT_MODEL_CONCURRENCY 设置
 ```
 
 网络、Agent、真实检索和 DeepSeek 已打通，构建与自动化检查结果见
-[验证说明](docs/testing.md)。CMD已接入C诊断与rootless临时文件工具；
+[验证说明](docs/testing.md)。CMD使用客户端分级策略与rootless工作区执行；
 跨设备部署仍需独立验收。断连取消、截止时间传播、
 资源关闭和本地就绪检查已实现。
 默认单进程与可选四进程配置均完成三轮32在途、600请求真实模型测试。
 四进程另完成真实千在途1000/1000成功，吞吐8.822请求/秒、混合P95为106.894秒。
 本轮吞吐优化已结束，不再以9请求/秒为目标；后续uvloop与工具绑定复用仅有受控验证，
-未重新进行付费千请求压测。配置、测量口径与版本边界见
+未重新进行付费千请求压测；这些数据不包含客户端命令确认与执行。配置、测量口径与版本边界见
 [并发配置与测量](docs/performance-concurrency.md)。
 
 ## 文档与协作

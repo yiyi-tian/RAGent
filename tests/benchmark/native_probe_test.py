@@ -43,14 +43,14 @@ class NativeProbeTests(unittest.TestCase):
                             ):
                                 expected_kind = 4 if failure == "business-agent" else 2
                                 self.assertEqual(
-                                    header, (0x52414754, 1, expected_kind, 16, identity)
+                                    header, (0x52414754, 2, expected_kind, 16, identity)
                                 )
                                 self.assertEqual(
                                     json.loads(receive_exact(connection, header[3])),
                                     {"query": "test"},
                                 )
                             else:
-                                self.assertEqual(header, (0x52414754, 1, 200, 2, identity))
+                                self.assertEqual(header, (0x52414754, 2, 200, 2, identity))
                                 self.assertEqual(receive_exact(connection, 2), b"{}")
                             returned = identity + 1 if failure == "id" else identity
                             payload = b"[]" if failure == "body" else b"{}"
@@ -80,7 +80,7 @@ class NativeProbeTests(unittest.TestCase):
                                 kind = 101
                                 payload = b'{"code":"SERVER_BUSY"} trailing'
                             response = (
-                                HEADER.pack(0x52414754, 1, kind, len(payload), returned) + payload
+                                HEADER.pack(0x52414754, 2, kind, len(payload), returned) + payload
                             )
                             if failure == "eof":
                                 connection.sendall(response[:9])
@@ -153,7 +153,7 @@ class NativeProbeTests(unittest.TestCase):
                             self.assertEqual((header[2], body), (200, {}))
                             kind = 201
                             payload = b"{}"
-                        response = HEADER.pack(0x52414754, 1, kind, len(payload), header[4])
+                        response = HEADER.pack(0x52414754, 2, kind, len(payload), header[4])
                         connection.sendall(response + payload)
                 except Exception as error:
                     errors.append(error)

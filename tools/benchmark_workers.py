@@ -324,14 +324,14 @@ async def clients(port, args):
                     reader, writer = await asyncio.open_connection("127.0.0.1", port)
                     body = json.dumps({"query": query}).encode()
                     writer.write(
-                        HEADER.pack(0x52414754, 1, 2 if mode == "rag" else 4, len(body), identity)
+                        HEADER.pack(0x52414754, 2, 2 if mode == "rag" else 4, len(body), identity)
                         + body
                     )
                     await writer.drain()
                     row["sent_s"] = time.monotonic()
                     header = HEADER.unpack(await reader.readexactly(20))
                     if (
-                        header[:2] != (0x52414754, 1)
+                        header[:2] != (0x52414754, 2)
                         or header[4] != identity
                         or header[3] > 1048576
                     ):

@@ -25,7 +25,7 @@ class Integration(unittest.TestCase):
         log = tempfile.TemporaryFile()
         config = tempfile.NamedTemporaryFile(mode="w+", suffix=".json")
         json.dump(
-            {"port": server_port, "agent_url": f"http://127.0.0.1:{python_port}/agent"}, config
+            {"port": server_port, "agent_url": f"http://127.0.0.1:{python_port}/tasks"}, config
         )
         config.flush()
         python = subprocess.Popen(
@@ -63,14 +63,43 @@ class Integration(unittest.TestCase):
                 self.fail(log.read().decode(errors="replace"))
             with connection:
                 stream = connection.makefile("rb")
-                for mode in range(1, 5):
-                    body = json.dumps({"query": "测试"}).encode()
+
+                def exchange(kind, identity, value):
+                    body = json.dumps(value).encode()
                     connection.sendall(
-                        struct.pack(">IHHIQ", 0x52414754, 1, mode, len(body), mode) + body
+                        struct.pack(">IHHIQ", 0x52414754, 2, kind, len(body), identity) + body
                     )
-                    _, _, kind, size, request_id = struct.unpack(">IHHIQ", stream.read(20))
-                    payload = json.loads(stream.read(size))
-                    self.assertEqual((kind, request_id), (100, mode))
+                    _, _, returned, size, request_id = struct.unpack(">IHHIQ", stream.read(20))
+                    self.assertEqual(request_id, identity)
+                    return returned, json.loads(stream.read(size))
+
+                kind, _ = exchange(7, 1, {"name": "fixture"})
+                self.assertEqual(kind, 103)
+                for mode in range(1, 5):
+                    identity = mode + 1
+                    kind, payload = exchange(mode, identity, {"query": "测试"})
+                    if mode in (3, 4):
+                        self.assertEqual(kind, 102)
+                        results = []
+                        for command in payload["commands"]:
+                            self.assertEqual(command["command"], "pwd")
+                            results.append(
+                                {
+                                    "id": command["id"],
+                                    "status": "success",
+                                    "effect": "none",
+                                    "text": "fixture-directory",
+                                }
+                            )
+                        kind, payload = exchange(
+                            5,
+                            identity,
+                            {
+                                "continuation": payload["continuation"],
+                                "results": results,
+                            },
+                        )
+                    self.assertEqual(kind, 100)
                     self.assertIn("actions", payload)
         finally:
             for process in (server, python):

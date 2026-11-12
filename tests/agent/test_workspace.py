@@ -286,7 +286,7 @@ class WorkspaceTests(unittest.IsolatedAsyncioTestCase):
                             "session": {"server_id": self.server_id, "connection_id": "1"},
                         }
                     ).encode()
-                    writer.write(struct.pack("!IHHIQ", 0x52414754, 1, 4, len(payload), request_id))
+                    writer.write(struct.pack("!IHHIQ", 0x52414754, 2, 4, len(payload), request_id))
                     writer.write(payload)
                     await writer.drain()
                     header = await asyncio.wait_for(reader.readexactly(20), 20)

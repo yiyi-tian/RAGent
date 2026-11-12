@@ -18,10 +18,17 @@ from .errors import ModelError
 from .model import DeepSeekModel
 from .retrieval import create_retriever
 from .tools.commands import CommandError
-from .tools.workspace import SandboxExecutor, SessionContext, create_executor
+from .tools.workspace import SandboxExecutor, SessionContext
 
 
-def create_app(retriever=None, model=None, timeout=10, executor=None, sandbox_maintenance=True):
+def create_app(
+    retriever=None,
+    model=None,
+    timeout=10,
+    executor=None,
+    sandbox_maintenance=True,
+    client_commands=False,
+):
     async def handle(request):
         try:
             data = await request.json()
@@ -32,6 +39,11 @@ def create_app(retriever=None, model=None, timeout=10, executor=None, sandbox_ma
         if not isinstance(data, dict) or not isinstance(data.get("request_id"), str):
             return web.json_response(
                 {"code": "INVALID_REQUEST", "message": "请求字段非法"}, status=400
+            )
+        if client_commands and data.get("mode") in ("cmd", "agent"):
+            return web.json_response(
+                {"code": "INVALID_REQUEST", "message": "命令模式须使用/tasks提案与本地授权接口"},
+                status=400,
             )
         remaining_ms = data.get("timeout_ms")
         if remaining_ms is not None and (
@@ -97,7 +109,7 @@ def create_app(retriever=None, model=None, timeout=10, executor=None, sandbox_ma
         return web.json_response({"alive": True})
 
     async def ready(request):
-        commands = "mock"
+        commands = "client" if client_commands else "mock"
         if isinstance(executor, SandboxExecutor):
             commands = "sandbox"
         elif executor is not None:
@@ -167,6 +179,9 @@ def create_app(retriever=None, model=None, timeout=10, executor=None, sandbox_ma
     app.router.add_get("/health", health)
     app.router.add_get("/ready", ready)
     app.router.add_post("/agent", handle)
+    from .tasks import install_task_route
+
+    install_task_route(app, model, retriever, timeout)
     app.router.add_post("/internal/sessions/sync", sync_sessions)
     if isinstance(executor, SandboxExecutor) and sandbox_maintenance:
         app.cleanup_ctx.append(maintain_sandboxes)
@@ -179,10 +194,6 @@ def main():
     parser.add_argument("--port", type=int, default=9001)
     parser.add_argument("--retrieval", choices=("mock", "qdrant"), default="mock")
     parser.add_argument("--model", choices=("mock", "deepseek"), default="mock")
-    parser.add_argument("--commands", choices=("mock", "local", "sandbox"), default="mock")
-    parser.add_argument(
-        "--executor", default=os.environ.get("RAGENT_EXECUTOR_PATH", "build/ragent-executor")
-    )
     parser.add_argument("--request-timeout", type=float, default=120)
     parser.add_argument("--workers", type=int, default=os.environ.get("RAGENT_AGENT_WORKERS", "1"))
     args = parser.parse_args()
@@ -190,8 +201,6 @@ def main():
         parser.error("请求总时限必须是有限正数")
     if not 1 <= args.workers <= 4:
         parser.error("工作进程数必须为1至4")
-    if args.commands == "sandbox" and args.host not in ("127.0.0.1", "::1", "localhost"):
-        parser.error("sandbox内部HTTP服务仅可绑定本机回环地址")
     if args.workers > 1:
         from .workers import supervise
 
@@ -200,14 +209,13 @@ def main():
             "model": args.model,
             "retrieval": args.retrieval,
             "timeout": args.request_timeout,
-            "commands": args.commands,
-            "executor_path": args.executor,
+            "commands": "client",
             "model_concurrency": int(os.environ.get("RAGENT_MODEL_CONCURRENCY", "32")),
             "retrieval_workers": int(os.environ.get("RAGENT_RETRIEVAL_WORKERS", "8")),
         }
         supervise(args.host, args.port, options)
         return
-    executor = uvloop.run(create_executor(args.commands, args.executor))
+    executor = None
     retriever = create_retriever() if args.retrieval == "qdrant" else None
     try:
         model = DeepSeekModel() if args.model == "deepseek" else None
@@ -215,7 +223,7 @@ def main():
         if retriever is not None:
             uvloop.run(retriever.close())
         raise
-    app = create_app(retriever, model, args.request_timeout, executor)
+    app = create_app(retriever, model, args.request_timeout, executor, client_commands=True)
 
     async def close_resources(app):
         async with AsyncExitStack() as resources:

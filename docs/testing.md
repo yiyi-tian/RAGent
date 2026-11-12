@@ -18,7 +18,7 @@ GitHub Actions在push及pull request时执行同范围的语法、类型、格�
 使用Mock和本地受控接口，无需配置云端密钥。检查失败须修复后再交付；分支保护仍由仓库管理员配置。
 
 CTest 包含线程池背压、部署脚本、RAG、并发、网络、Agent、固定工作进程和
-独立 C 负载发生器、执行器及文件工作区共十项。
+独立C负载发生器、命令策略、内核只读边界、网络授权及终端转义。当前共17组。
 Agent 测试依赖已安装的项目及
 Python 运行依赖；依赖不齐时 CMake 会提示未启用，不能将其当作完整验收。
 网络测试仅需 Python 标准库，服务与集成测试使用动态端口。Agent 测试串行运行，
@@ -80,7 +80,7 @@ wheel已重新构建并核对固定工作进程模块和uvloop依赖；项目依
 来源与证据质量见[来源级评测](rag-evaluation-v1.md)及
 [证据块评测](rag-evidence-v1.md)。
 
-诊断与连接临时文件工具已接入真实C组件及rootless容器，验证范围见下文。真实千在途已完成1000/1000成功，但吞吐8.822请求/秒，
+客户端分级命令使用真实C策略组件及rootless容器，验证范围见下文。真实千在途已完成1000/1000成功，但吞吐8.822请求/秒，
 本轮不再追求9请求/秒；uvloop版本未重新进行真实云端千请求测试，详见
 [高并发配置与测量](performance-concurrency.md)。客户端没有跨请求
 历史与 Tab 补全。Docker 已启用开机启动，Qdrant 可用；该启动配置的再次宿主机重启
@@ -150,59 +150,52 @@ set +a
 记录逐请求结果、每秒RSS/线程/FD、最近观察到的队列深度及退出时队列状态。
 少于3600秒只算冒烟，不能通过完整稳定性验收，也不能代替真实模型千在途测试。
 
-## 只读执行器验证
+## 分级命令与容器验证
 
-`executor-unit`使用本地C夹具验证无输出超时、输出关闭后继续运行、输出超限、边界长度、
-非零退出、密钥环境隔离、遗留后代进程组清理以及信号取消。Release测试保持assert启用。
-Agent组覆盖实际free/df/ps、拒绝未知操作与嵌入NUL、非法执行器响应、任务取消与资源回收，
-并通过独立C网络服务、Python HTTP、真实C执行器完成CMD和AGENT自然语言请求闭环。
-固定工作进程组增加四进程local命令模式验证。测试使用受控模型，不调用云端。
-本轮通过sdist重新构建wheel，确认包含ragent.tools；不直接复用旧build/lib中的打包缓存。
-Python包不包含C执行器二进制，安装后须提供独立构建的执行器。
-真实DeepSeek的CMD结果见下节，不将受控测试替代真实模型验收。
+本机Ubuntu 24.04 amd64执行结果：
 
+- 干净Release构建使用 `-DCMAKE_C_FLAGS=-Werror`，17组CTest全部通过。
+- Pyright、全范围语法编译和Black检查通过，覆盖python/ragent、rag、tools、tests。
+- 只读边界实际拒绝写入、截断、创建、删除、凭证内容、硬链接、符号链接逃逸、网络、
+  其他程序执行及进程内存读取；流水线、条件链、通配符、文件计数和Git已暂存敏感文件过滤通过。
+- 9项C客户端与任务续行测试通过，包含本地TTY批准、拒绝、非交互拦截、环境/文件凭证输出隔离、
+  跨连接令牌拒绝、一次性续行、心跳及实际客户端工作目录。
+- 8项真实容器测试通过，包含写入回传与归属、敏感文件/硬链接/宿主机Socket隔离、工作区外拒绝、
+  默认无网、取消清理、显式环境注入、HTTPS精确授权及SNI拒绝、SSH授权端点握手。
+- 实际SIGKILL客户端后，回收服务删除遗留容器；此前写入保留，延迟写入没有发生。
+- 安装后的ragent在含中文、空格的仓库外目录执行只读命令通过；实际日常启动与PING通过。
+  这次启动只检查本地依赖，没有调用付费模型或Embedding。
 
-## CMD沙箱与真实模型验证
-
-在已部署独立rootless服务和镜像的本机运行：
+常规CTest不要求部署Docker镜像，容器与TTY批准测试默认明确跳过。部署命令运行时后单独执行：
 
 ```bash
-RAGENT_TEST_SANDBOX=1 .venv/bin/python -W error::RuntimeWarning -m unittest discover \
-    -s tests/agent -p test_workspace.py -v
+RAGENT_TEST_SANDBOX=1 ctest --test-dir build -R command-container-integration --output-on-failure
+RAGENT_TEST_SANDBOX=1 RAGENT_SERVER="$PWD/build/agent-server" \
+  .venv/bin/python -m unittest discover -s tests/agent -p test_task_transport.py -v
 ```
 
-沙箱测试默认不加入云端依赖；未设置该环境变量时显式跳过，不能将CTest通过视为容器验收。
-本机实际执行7项测试：顺序CRUD与模式授权、8工作区容量与跨连接隔离、路径拒绝、
-执行失败后关闭工作区且只读仍可用、四Python进程共享工作区、TCP身份防伪造及
-正常断连/前端强杀清理，以及非法参数正文不入日志。新容器内探针检查实际cgroup资源值、UID、seccomp、
-capabilities、只读根、tmpfs大小与挂载标志，并实际验证外部网络不可达。
-C文件单元测试另覆盖符号链接、硬链接、原子拒绝覆盖、128项配额与分页。
+网络测试访问example.com和ssh.github.com，网络不可用时会失败，不将其替换为假成功。
+SSH验证覆盖代理通道和SSH握手，未使用真实账户私钥验证远程认证或推送。
+自定义敏感名配置已实际验证追加规则及非法配置拒绝；未在另一台全新主机上验证整套安装脚本，也未验证其他操作系统或架构。
 
-付费验收工具自行启动临时端口C/Python服务、连接现有Qdrant，不更改知识库或常规服务：
+## 真实模型闭环
+
+本轮真实DeepSeek验证通过：客户端pwd、手册检索与pwd组合、非交互写入拦截、
+在终端核对并批准 `touch approved-real-file` 后的真实写入，文件在客户端断连后仍存在。
+另有一次确认等待超时被安全取消，未执行写入。
+本轮共8次模型、1次Embedding；共享预算账本累计53/80次模型、5/40次Embedding，
+未重置或提高预算。没有重新进行吞吐或千在途压测，既有吞吐数据不能代表本地命令执行性能。
+
+自动付费工具只验证固定只读/检索与非交互拦截，不自动批准写入：
 
 ```bash
 set -a
 source .env
 set +a
-.venv/bin/python -m tools.validate_cmd --phase precheck \
-    --output artifacts/cmd-validation/precheck.json
 .venv/bin/python -m tools.validate_cmd --phase formal \
-    --output artifacts/cmd-validation/formal.json
+  --output artifacts/cmd-policy-implementation/real-model.json
 ```
 
-账本固定为`artifacts/cmd-validation/budget.json`，总上限80次模型、40次Embedding；
-precheck/formal/fix模型额度分别16/48/16，调用前计数，失败和预留不回退，不自动重试。
-报告中的passed检查实际工具及状态，最终文本与证据仍须人工核查。
-
-2026-11-12本机正式12条用例覆盖诊断、检索组合、持续文件工作流、第二客户端隔离与越权拒绝。
-执行分支均满足预期；其中一次更新流程在写入并读取成功后触及模型轮数限制，
-调整工具结果中的真实执行/committed语义后，创建、覆盖和读取两条真实复测均得到完整说明。
-该调整未提高每请求最多4次模型调用的上限。
-正式用例中df/free未检索到对应手册，模型说明证据不足；该结果只证明失败如实反馈，
-不能视为这些手册的答案质量达标。ps/ls检索加诊断的两条补充用例均命中对应手册并完成实际诊断，人工核对参数解释与来源一致。
-累计使用45/80次模型、4/40次Embedding（precheck 4次模型，formal 31次，fix 10次）。
-
-原始报告、预算与构建日志保留在忽略的`artifacts/cmd-validation/`和
-`artifacts/cmd-review-20261112/`，不提交运行日志、诊断快照或状态文件。
-本轮不执行新的吞吐压测，也未验证另一台设备部署；文件为连接级临时数据，不提供下载、
-跨连接历史、Shell或宿主机系统写入。
+调用前持久化计数，失败和预留也计入；precheck/formal/fix模型额度分别16/48/16。
+报告、安装记录、构建与容器日志保存在忽略的 `artifacts/cmd-policy-implementation/`，
+预算保存在 `artifacts/cmd-validation/budget.json`，不提交运行资料或凭证。

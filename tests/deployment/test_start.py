@@ -32,7 +32,7 @@ class DeploymentTests(unittest.TestCase):
         config = {
             "host": "127.0.0.1",
             "port": self.ports[0],
-            "agent_url": f"http://127.0.0.1:{self.ports[1]}/agent",
+            "agent_url": f"http://127.0.0.1:{self.ports[1]}/tasks",
         }
         (self.root / "config/agent.json").write_text(json.dumps(config))
         (self.root / ".env").write_text(
@@ -102,7 +102,7 @@ with socket.socket() as listener:
         self.program(".venv/bin/ragent-server", service)
         self.program("build/agent-server", service)
         self.program("build/agent", "#!/bin/sh\nexit 0\n")
-        self.program("build/ragent-executor", "#!/bin/sh\nexit 0\n")
+        self.program("build/ragent-observe", "#!/bin/sh\nexit 0\n")
         (self.root / "rag/__init__.py").write_text("")
         (self.root / "rag/services.py").write_text("""
 class ServiceError(Exception):

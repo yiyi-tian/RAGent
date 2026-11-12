@@ -9,6 +9,7 @@
 
 static char endpoint[1024];
 static unsigned timeout = 12000;
+static bool tasks_enabled;
 static char session_server_id[33];
 typedef struct {
     unsigned char *data;
@@ -22,8 +23,15 @@ int agent_http_configure(const char *url, unsigned timeout_ms)
     }
     session_server_id[0] = '\0';
     strcpy(endpoint, url);
+    size_t length = strlen(url);
+    tasks_enabled = length >= 6 && strcmp(url + length - 6, "/tasks") == 0;
     timeout = timeout_ms;
     return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK ? 0 : -1;
+}
+
+bool agent_http_tasks_enabled(void)
+{
+    return tasks_enabled;
 }
 
 static size_t receive_body(char *data, size_t size, size_t count, void *context)
@@ -103,6 +111,21 @@ int agent_http_request_controlled(const Frame *request, unsigned remaining_ms,
         json_object_object_add(body, "session", session);
     }
     unsigned budget_ms = remaining_ms < timeout ? remaining_ms : timeout;
+    if (tasks_enabled && (request->type == MESSAGE_CMD_REQUEST ||
+                          request->type == MESSAGE_AGENT_REQUEST)) {
+        json_object *deadline_value = json_object_object_get(body, "private_deadline_ms");
+        int64_t deadline = json_object_get_int64(deadline_value);
+        int64_t left = deadline - ((int64_t)started.tv_sec * 1000 + started.tv_nsec / 1000000);
+        if (left <= 0) {
+            json_object_put(body);
+            return frame_make_error(request->request_id, "UPSTREAM_TIMEOUT",
+                                    "任务累计计算时限已到", response);
+        }
+        if ((uint64_t)left < budget_ms) {
+            budget_ms = (unsigned)left;
+        }
+    }
+    json_object_object_del(body, "private_deadline_ms");
     CURL *curl = curl_easy_init();
     Buffer buffer = {0};
     struct curl_slist *headers = curl_slist_append(NULL, "Content-Type: application/json");
@@ -123,7 +146,13 @@ int agent_http_request_controlled(const Frame *request, unsigned remaining_ms,
     }
     if (curl && headers && budget_ms > 0) {
         json_object_object_add(body, "timeout_ms", json_object_new_int64(budget_ms));
-        curl_easy_setopt(curl, CURLOPT_URL, endpoint);
+        char target[sizeof(endpoint)];
+        strcpy(target, endpoint);
+        if (tasks_enabled && request->type != MESSAGE_CMD_REQUEST &&
+            request->type != MESSAGE_AGENT_REQUEST) {
+            strcpy(target + strlen(target) - 6, "/agent");
+        }
+        curl_easy_setopt(curl, CURLOPT_URL, target);
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_object_to_json_string(body));
         curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)budget_ms);
@@ -149,6 +178,10 @@ int agent_http_request_controlled(const Frame *request, unsigned remaining_ms,
                    json_object_is_type(text, json_type_string) &&
                    json_object_object_get_ex(result, "sources", &sources) &&
                    json_object_is_type(sources, json_type_array);
+    json_object *kind = result == NULL ? NULL : json_object_object_get(result, "kind");
+    bool proposal = tasks_enabled && http_status == 200 &&
+        json_object_is_type(kind, json_type_string) &&
+        strcmp(json_object_get_string(kind), "command_proposal") == 0;
     bool failure = result && http_status >= 400 &&
                    json_object_object_get_ex(result, "code", &code) &&
                    json_object_is_type(code, json_type_string) &&
@@ -161,8 +194,13 @@ int agent_http_request_controlled(const Frame *request, unsigned remaining_ms,
                   strcmp(value, "UPSTREAM_UNAVAILABLE") == 0 ||
                   strcmp(value, "INTERNAL_ERROR") == 0;
     }
-    if (success || failure) {
-        response->type = success ? MESSAGE_RESPONSE : MESSAGE_ERROR;
+    if (success || failure || proposal) {
+        response->type = MESSAGE_ERROR;
+        if (proposal) {
+            response->type = MESSAGE_COMMAND_PROPOSAL;
+        } else if (success) {
+            response->type = MESSAGE_RESPONSE;
+        }
         response->request_id = request->request_id;
         response->body = buffer.data;
         response->body_length = buffer.length;

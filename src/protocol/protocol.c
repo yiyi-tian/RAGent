@@ -70,7 +70,7 @@ int frame_decoder_next(FrameDecoder *decoder, Frame *frame, const char **error_m
         *error_message = "magic错误";
         return -1;
     }
-    if (read_integer(decoder->data, 4, 2) != 1) {
+    if (read_integer(decoder->data, 4, 2) != RAGENT_PROTOCOL_VERSION) {
         *error_message = "version不支持";
         return -1;
     }
@@ -111,7 +111,7 @@ int frame_encode(const Frame *frame, unsigned char **encoded, size_t *encoded_le
         return -1;
     }
     write_integer(bytes, 0, RAGENT_MAGIC, 4);
-    write_integer(bytes, 4, 1, 2);
+    write_integer(bytes, 4, RAGENT_PROTOCOL_VERSION, 2);
     write_integer(bytes, 6, (uint16_t)frame->type, 2);
     write_integer(bytes, 8, frame->body_length, 4);
     write_integer(bytes, 12, frame->request_id, 8);

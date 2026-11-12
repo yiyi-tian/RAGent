@@ -85,13 +85,13 @@ class DisconnectTests(unittest.TestCase):
                     with socket.create_connection(("127.0.0.1", port), timeout=3) as first:
                         first.settimeout(3)
                         body = b'{"query":"blocked"}'
-                        first.sendall(HEADER.pack(0x52414754, 1, 1, len(body), 1) + body)
+                        first.sendall(HEADER.pack(0x52414754, 2, 1, len(body), 1) + body)
                         self.assertTrue(entered.wait(3))
                         body = b'{"query":"must-not-run"}'
                         first.sendall(
-                            HEADER.pack(0x52414754, 1, 1, len(body), 2)
+                            HEADER.pack(0x52414754, 2, 1, len(body), 2)
                             + body
-                            + HEADER.pack(0x52414754, 1, 200, 2, 3)
+                            + HEADER.pack(0x52414754, 2, 200, 2, 3)
                             + b"{}"
                         )
                         self.assertEqual(receive(first)[0][2], 201)
@@ -99,7 +99,7 @@ class DisconnectTests(unittest.TestCase):
                     with socket.create_connection(("127.0.0.1", port), timeout=3) as second:
                         second.settimeout(3)
                         body = b'{"query":"new"}'
-                        second.sendall(HEADER.pack(0x52414754, 1, 1, len(body), 1) + body)
+                        second.sendall(HEADER.pack(0x52414754, 2, 1, len(body), 1) + body)
                         header, response = receive(second)
                         self.assertEqual(header[2], 100)
                         self.assertEqual(response["text"], "ok")

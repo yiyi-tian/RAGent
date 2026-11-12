@@ -3,6 +3,14 @@
 
 #include <signal.h>
 #include <stddef.h>
+#include <stdbool.h>
+#include <stdint.h>
+
+/* 单调时钟失败返回-1；deadline为0表示仅使用本次调用上限。 */
+int64_t command_now_ms(void);
+unsigned command_time_left(int64_t deadline, unsigned cap_ms);
+
+typedef bool (*CommandMonitor)(void *context);
 
 #define COMMAND_OUTPUT_LIMIT 16384U
 #define COMMAND_CAPTURE_LIMIT 131072U
@@ -27,6 +35,18 @@ int command_run(const char *path, char *const argv[], unsigned timeout_ms,
 int command_capture(const char *path, char *const argv[], const char *input, size_t input_length,
                     size_t output_limit, unsigned timeout_ms,
                     const volatile sig_atomic_t *cancelled, CommandResult *result);
+
+/* 向可信只读执行器传递工作区目录描述符3，避免目录替换造成路径竞态。 */
+int command_capture_workspace(const char *path, char *const argv[], const char *input,
+                               size_t input_length, size_t output_limit, unsigned timeout_ms,
+                               int workspace, const volatile sig_atomic_t *cancelled,
+                               CommandResult *result);
+
+/* monitor只检查调用方生命周期，不执行用户交互；失效后中止进程组并回收。 */
+int command_capture_monitored(const char *path, char *const argv[], const char *input,
+                               size_t input_length, size_t output_limit, unsigned timeout_ms,
+                               int workspace, CommandMonitor monitor, void *context,
+                               const volatile sig_atomic_t *cancelled, CommandResult *result);
 
 /* target只能为memory、disk、processes、load；权限与参数白名单在此C边界落实。 */
 int command_diagnose(const char *target, unsigned timeout_ms,

@@ -37,7 +37,7 @@ async def socket_exchange(connection, kind, identity, payload):
     loop = asyncio.get_running_loop()
     body = b"{}" if payload == {} else json.dumps(payload, separators=(",", ":")).encode()
     await loop.sock_sendall(
-        connection, HEADER.pack(0x52414754, 1, kind, len(body), identity) + body
+        connection, HEADER.pack(0x52414754, 2, kind, len(body), identity) + body
     )
 
     async def receive_exact(length):
@@ -50,7 +50,7 @@ async def socket_exchange(connection, kind, identity, payload):
         return data
 
     magic, version, returned_kind, length, returned_id = HEADER.unpack(await receive_exact(20))
-    if (magic, version, returned_id) != (0x52414754, 1, identity) or length > 1048576:
+    if (magic, version, returned_id) != (0x52414754, 2, identity) or length > 1048576:
         raise ValueError("响应帧头非法")
     raw = await receive_exact(length)
     result = {} if raw == b"{}" else json.loads(raw)

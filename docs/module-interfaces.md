@@ -1,6 +1,6 @@
 # RAGent 模块接口
 
-本文描述当前网络、Agent、模型与检索接口。诊断与沙箱管理通过独立C组件执行；文件操作只作用于连接临时工作区。
+本文描述当前网络、Agent、模型与检索接口。命令策略与执行由客户端C组件承担，工作区为客户端启动目录。
 TCP 帧格式以[协议规范](protocol.md)为准。
 
 ## C 网络与资源所有权
@@ -34,7 +34,7 @@ HTTP服务使用uvloop事件循环；单进程与固定多进程入口采用相�
 {"request_id":"1","mode":"rag","query":"如何列出隐藏文件？"}
 ```
 
-request_id 使用字符串避免 64 位整数精度问题；mode 为 chat、rag、cmd 或 agent。
+request_id 使用字符串避免 64 位整数精度问题；该入口mode为chat或rag；CMD/AGENT使用下文的/tasks。
 成功返回 `text` 字符串、`sources` 数组和 `actions` 数组。来源形状见 TCP 协议；
 actions 每项包含 `tool`、`status`、`summary`，status 为 success 或 failed。
 失败返回 `code`、`message`，C 负责映射为 TCP ERROR 并保留原 request_id。
@@ -63,8 +63,8 @@ RAG 和已调用检索的 AGENT 会加入只依据证据作答的
 |---|---|
 | CHAT | 无工具 |
 | RAG | 编排层强制检索后提供证据，不插入伪造的模型工具调用 |
-| CMD | 按配置提供诊断与工作区工具，见下文 |
-| AGENT | search_linux_manual 与diagnose |
+| CMD | run_command命令提案 |
+| AGENT | search_linux_manual 与run_command |
 
 每请求最多 4 次模型调用，每轮最多 4 个工具。服务总时限默认 120 秒，可通过
 `--request-timeout` 设置；无成功结果时总超时返回错误，有成功工具结果时返回未完成摘要。
@@ -101,7 +101,7 @@ vector 策略不加载该索引，直接执行单路向量检索。
 模型和检索方式由 Python 启动参数选择。真实入口客户端需使用 `--timeout-ms 130000`。
 模型单次超时与 Token 上限由环境提供。不带配置文件启动 C 服务时使用固定响应。
 
-只读执行器接口见下节；命令由服务用户执行，不提升权限。
+命令边界见[命令执行](command-policy.md)，不提升宿主机权限。
 自动写操作必须限制在隔离工作区，隔离不可用时禁用，不向 Agent 暴露 Docker 管理套接字。
 
 排队过期任务在工作线程取出时返回 UPSTREAM_TIMEOUT，不再发起后端调用。
@@ -114,70 +114,20 @@ CLI在线服务持有的模型客户端、检索线程池与执行器在应用�
 通过 `create_app` 注入的共享资源由调用者管理，应用不自动关闭。模型异步客户端关闭失败时，
 仍释放同步客户端并保留原异常。
 
-## 首批只读执行器接口
+## 可暂停的命令任务
 
-Python使用`asyncio.create_subprocess_exec`启动独立`ragent-executor`，每进程处理一次请求后退出。
-stdin为不超过4095字节的UTF-8 JSON对象，写入后关闭；stdout为一个JSON结果；stderr不作为工具输出。
-请求仅接受`{"target":"memory","timeout_ms":3000}`，timeout_ms为1至3000的整数，取请求剩余预算。
-`target`支持memory、disk、processes、load；进程详情使用process_detail及正整数pid，
-监听端口使用listeners及protocol=tcp|udp|all。程序与参数在C端固定，不接受任意命令。
-没有任意路径、命令字符串、环境变量或Shell参数接口。业务不进入协议编解码模块。
+`POST /tasks`承载CMD和AGENT。初次请求包含query、mode和workspace；恢复请求包含
+C网络线程保存的task_state与按原tool_call ID排序的results。Python工作进程不持有待确认会话。
+模型调用保持实际AIMessage和ToolMessage，最多4轮、每轮4工具，按序执行命令。
 
-结果为`ok`布尔值、`code`字符串、`output`字符串、`exit_code`整数和`signal`整数。
-成功时code为空、exit_code与signal为0；错误码为既有COMMAND_NOT_ALLOWED、COMMAND_TIMEOUT、
-COMMAND_OUTPUT_LIMIT或COMMAND_FAILED。失败输出不作为成功证据回填；Agent保留错误码及失败摘要，
-其他工具成功结果仍可继续使用。模型实际tool_call_id与ToolMessage一一对应。
+Python返回 `kind=command_proposal`、commands和私有state。C网络线程保存state，
+删除其公开副本，生成一次性continuation。客户端只收到命令，不收到模型历史。
+结果继续使用原request_id；跨连接、重复及错误continuation均拒绝。
+等待确认最多15分钟，不持有C业务线程或HTTP连接；同连接只允许一个命令任务。
+最多64个保留状态的续行任务，每个私有状态512 KiB；计算和排队累计预算120秒，确认等待另计。
 
-C执行器使用单调时钟、非阻塞管道和有界等待，输出最多16384字节，超限直接失败；不截断成成功。
-命令独立进程组，超时和取消时杀死整组并waitpid回收直接子进程；子进程stdin为已关闭写端的管道，
-只继承固定PATH和LC_ALL，不继承云端密钥。Python取消时通知C执行器清理，退出时回收活动任务。
-全组命令最多4个并发，按固定工作进程数均分；等待名额也计入请求总时限。
-
-`--commands mock|local|sandbox`默认mock；local模式启动时校验执行器可用，/ready也检查本机执行器文件，
-不执行诊断或调用云端。`--executor`或RAGENT_EXECUTOR_PATH指定路径，默认build/ragent-executor。
-通过create_app注入的共享执行器与模型、检索器一样由调用者关闭。
-
-## 连接临时工作区接口
-
-`sandbox`配置额外提供下列结构化LangChain工具；CMD和AGENT可调用，CHAT和RAG不提供。
-
-| 工具 | 参数 | 行为 |
-|---|---|---|
-| workspace_list | path=".", offset=0 | 名称排序，每页32项，返回next_offset |
-| workspace_read | path | 读取最多16 KiB UTF-8文本 |
-| workspace_write | path, content, overwrite=false | 原子提交，默认拒绝覆盖 |
-| workspace_mkdir | path | 创建目录，父目录须存在 |
-| workspace_copy | source, destination | 复制普通文本文件，拒绝覆盖 |
-| workspace_move | source, destination | 移动文件或目录，拒绝覆盖 |
-| workspace_remove | path | 删除普通文件或空目录，禁止递归及根目录删除 |
-
-路径按UTF-8字节限制为512、每段128、最多16段；拒绝绝对路径、`..`、控制字符、NUL、
-符号链接及保留前缀`.ragent-`。C使用openat2的BENEATH和NO_SYMLINKS/NO_MAGICLINKS落实边界。
-每工作区最多128项；读写不接受二进制/NUL，不执行文本或脚本。
-同轮包含文件工具时按模型调用顺序执行；同一连接跨请求由C锁串行，其他连接可并行。
-不自动重试写操作；同请求遇到unknown后停止后续写入，重复相同写调用也拒绝。
-
-C前端使用随机实例ID及稳定连接ID覆盖外部session字段；公共TCP v1保持不变。
-Python内部HTTP接收`session={server_id,connection_id}`，模型参数不含此身份。
-`--sandbox-sessions`要求至少2个C工作线程，其中1个专门维护连接；仍属于固定线程总数。
-该线程每秒将`server_id,pid,start,boot,sequence,through,active`快照发送到
-`/internal/sessions/sync`；最多1个在途和1个最新待发快照。
-through为已接受的最大连接ID，新连接可先于下一快照执行；旧sequence不覆盖新快照。
-维护失联超过10秒暂停文件操作，不按心跳超时猜测删除仍活着的连接；PID、启动ticks和boot ID
-确认前端死亡后可回收。正常断连后由快照清理，后台每2秒对账；无故障环境目标10秒内。
-内部HTTP仅绑定本机回环地址，不应直接暴露给客户端。
-
-Python启动独立`ragent-sandbox --socket PATH --state FILE`，每次stdin一个JSON请求，stdout一个结果。
-操作为probe、sync或invoke；invoke携带上述session、tool、args及受信任request_id/operation_id。
-结果沿用只读结果字段，新增effect=none|committed|unknown，表示未提交、已提交、结果未知。
-执行中断或非法响应关闭工作区；同一连接不能重建，须重新连接，不承诺多步骤事务回滚。
-C通过固定Docker argv启动容器及`ragent-file-worker`，后者只打开固定`/workspace`。
-所有文件读取及权限落实均在C边界，不存在宿主机裸执行备用路径。
-
-沙箱使用独立rootless Docker socket，固定镜像`ragent-file-sandbox:v1`在启动时解析为镜像ID。
-新容器必须通过真实隔离探针：UID/GID1000、capabilities清空、no-new-privileges、seccomp、
-只读根、无外部网络，以及cgroup限制128 MiB/0.5 CPU/32进程。
-`/workspace`为16 MiB tmpfs，nosuid/nodev/noexec，不挂载宿主机目录或Docker socket。
-最多8个连接工作区；全组诊断和文件工具共用4个业务执行槽，维护不占用业务槽。
-状态文件和审计由服务用户持有，目录0700、文件0600；管理进程通过flock协调多进程。
-审计只保留标识、工具、受限路径、结果、耗时与退出信息，不记录正文或完整工具输出；8 MiB轮转共3份。
+本地C接口 `command_policy`解析完整命令；`local_command`固定工作区描述符、读取本地TTY授权，
+再调用只读观察器或容器管理器。观察器接收fd3，容器挂载后核对工作区设备号与inode。
+命令结果包含status、effect、exit_code及cleanup_failed；effect=unknown时停止后续命令，
+不得声称回滚。凭证授权不进入TCP，使用凭证时text仅包含输出已隔离的说明。
+TCP消息与续行流程见[协议](protocol.md)。

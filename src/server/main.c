@@ -4,6 +4,7 @@
 #include "net/socket.h"
 #include "protocol/protocol.h"
 #include "server/worker_pool.h"
+#include "server/task_bridge.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -50,6 +51,7 @@ typedef struct {
     uint64_t id;
     uint64_t last_request_id;
     WorkerLifetime *lifetime;
+    TaskBridge task;
     FrameDecoder decoder;
     OutputChunk *output_head;
     OutputChunk *output_tail;
@@ -338,6 +340,7 @@ static void connection_destroy(Connection *connection)
     if (connection->socket_fd >= 0) {
         close(connection->socket_fd);
     }
+    task_bridge_destroy(&connection->task);
     frame_decoder_destroy(&connection->decoder);
     output_chunks_destroy(connection->output_head);
     memset(connection, 0, sizeof(*connection));
@@ -401,11 +404,29 @@ static int queue_frame(Server *server, Connection *connection, Frame *frame)
 static int process_frame(Server *server, uint64_t connection_id, Connection *connection,
                          Frame *request)
 {
-    if (request->request_id == 0 || request->request_id <= connection->last_request_id) {
+    bool continuation = agent_http_tasks_enabled() &&
+        (request->type == MESSAGE_COMMAND_RESULT || request->type == MESSAGE_TASK_CANCEL ||
+         request->type == MESSAGE_TASK_HEARTBEAT);
+    if (request->request_id == 0 ||
+        (!continuation && request->request_id <= connection->last_request_id)) {
         errno = EPROTO;
         return -1;
     }
-    connection->last_request_id = request->request_id;
+    if (!continuation) {
+        connection->last_request_id = request->request_id;
+    }
+    if (agent_http_tasks_enabled() || request->type == MESSAGE_SESSION_OPEN) {
+        Frame direct = {0};
+        int prepared = task_bridge_input(&connection->task, request, &direct);
+        if (prepared < 0) {
+            return -1;
+        }
+        if (prepared == 1) {
+            int status = queue_frame(server, connection, &direct);
+            frame_destroy(&direct);
+            return status;
+        }
+    }
     if (request->type != MESSAGE_PING && request->type >= MESSAGE_CHAT_REQUEST &&
         request->type <= MESSAGE_AGENT_REQUEST) {
         WorkItem item = {
@@ -425,6 +446,9 @@ static int process_frame(Server *server, uint64_t connection_id, Connection *con
         if (frame_make_error(
                 request->request_id, "SERVER_BUSY", "任务队列已满，请稍后重试。", &busy) != 0) {
             return -1;
+        }
+        if (agent_http_tasks_enabled()) {
+            task_bridge_output(&connection->task, &busy);
         }
         int result = queue_frame(server, connection, &busy);
         frame_destroy(&busy);
@@ -824,7 +848,9 @@ static int process_completions(Server *server)
                     item.frame.request_id);
         } else {
             Connection *connection = &server->connections[index];
-            if (item.frame.body == NULL || queue_frame(server, connection, &item.frame) != 0 ||
+            if ((agent_http_tasks_enabled() &&
+                 task_bridge_output(&connection->task, &item.frame) != 0) ||
+                item.frame.body == NULL || queue_frame(server, connection, &item.frame) != 0 ||
                 update_interest(server, connection) != 0) {
                 fprintf(stderr,
                         "[INFO] conn=%" PRIu64 " stage=close reason=发送缓冲达到上限或响应失败\n",
@@ -855,7 +881,25 @@ static int server_run(Server *server)
         if (server->options.sandbox_sessions && time(NULL) != server->snapshot_time) {
             publish_sessions(server);
         }
-        int wait_ms = server->options.sandbox_sessions ? 1000 : -1;
+        if (agent_http_tasks_enabled()) {
+            for (size_t index = 0; index < server->options.max_connections; ++index) {
+                Connection *connection = &server->connections[index];
+                if (connection->socket_fd < 0) {
+                    continue;
+                }
+                Frame expired = {0};
+                int state = task_bridge_expire(&connection->task, &expired, time(NULL));
+                if (state < 0 || (state == 1 &&
+                    (queue_frame(server, connection, &expired) != 0 ||
+                     update_interest(server, connection) != 0))) {
+                    frame_destroy(&expired);
+                    remove_connection(server, index);
+                    continue;
+                }
+                frame_destroy(&expired);
+            }
+        }
+        int wait_ms = (server->options.sandbox_sessions || agent_http_tasks_enabled()) ? 1000 : -1;
         const int event_count = epoll_wait(server->epoll_fd, events, 64, wait_ms);
         if (event_count < 0) {
             if (errno == EINTR) {

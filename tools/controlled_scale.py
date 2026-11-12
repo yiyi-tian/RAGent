@@ -78,7 +78,7 @@ class ControlledModel:
 
 async def receive(reader, identity):
     magic, version, kind, length, returned = HEADER.unpack(await reader.readexactly(20))
-    if (magic, version, returned) != (0x52414754, 1, identity) or length > 1048576:
+    if (magic, version, returned) != (0x52414754, 2, identity) or length > 1048576:
         raise ValueError("响应帧非法")
     data = json.loads(await reader.readexactly(length))
     if kind == 101:
@@ -213,7 +213,7 @@ async def main_async(args):
                             body = json.dumps({"query": case["query"]}).encode()
                             mode = 2 if identity % 2 == 0 else 4
                             writer.write(
-                                HEADER.pack(0x52414754, 1, mode, len(body), identity) + body
+                                HEADER.pack(0x52414754, 2, mode, len(body), identity) + body
                             )
                             await writer.drain()
                             row["code"] = await receive(reader, identity)

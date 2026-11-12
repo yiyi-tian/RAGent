@@ -57,7 +57,12 @@ async def serve(listener, stop, start, ready, listening, options, configure, ind
             split_limit(4, options["workers"], index),
         )
         app = create_app(
-            retriever, model, options["timeout"], executor, sandbox_maintenance=index == 0
+            retriever,
+            model,
+            options["timeout"],
+            executor,
+            sandbox_maintenance=index == 0,
+            client_commands=options.get("commands") == "client",
         )
         if configure is not None:
             cleanup = configure(app, retriever, model)

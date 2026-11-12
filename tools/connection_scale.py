@@ -67,11 +67,11 @@ async def measure(output="artifacts/performance/target-idle1000.json", driver="s
                     raise ValueError("PONG响应错误")
                 return time.monotonic() - started
             reader, writer = pair
-            writer.write(HEADER.pack(0x52414754, 1, 200, 2, identity) + b"{}")
+            writer.write(HEADER.pack(0x52414754, 2, 200, 2, identity) + b"{}")
             await writer.drain()
             raw = await asyncio.wait_for(reader.readexactly(20), 3)
             magic, version, kind, length, returned = HEADER.unpack(raw)
-            if (magic, version, kind, length, returned) != (0x52414754, 1, 201, 2, identity):
+            if (magic, version, kind, length, returned) != (0x52414754, 2, 201, 2, identity):
                 raise ValueError("PING响应帧不匹配")
             if await reader.readexactly(length) != b"{}":
                 raise ValueError("PONG载荷错误")

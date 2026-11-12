@@ -1,6 +1,6 @@
-# RAGent TCP协议规范 v1
+# RAGent TCP协议规范 v2
 
-状态：TCP v1，支持 CHAT、RAG、CMD、AGENT 请求、成功与错误响应以及 PING/PONG。
+状态：TCP v2（客户端与服务端须同时升级），支持 CHAT、RAG、CMD、AGENT 请求、成功与错误响应以及 PING/PONG。
 
 ## 1. 范围与原则
 
@@ -10,7 +10,7 @@
 
 消息头确定边界、类型和请求标识，JSON表达业务数据。客户端默认将普通输入作为AGENT_REQUEST发送；CHAT、RAG、CMD是显式单一模式。模式只影响当前请求类型和可用工具，不保存为连接状态。
 
-第一版不包含身份认证、TLS、流式输出、取消请求、断线续传和自动重试，部署于受控课程实验网络。
+本版包含命令任务暂停与取消，不包含身份认证、TLS、流式输出、断线续传和自动重试，部署于受控课程实验网络。
 
 ## 2. 消息头与帧边界
 
@@ -21,7 +21,7 @@
 | 偏移 | 字段 | 无符号整数宽度 | 约定 |
 |---|---|---|---|
 | 0 | magic | 32位 | 0x52414754，ASCII为RAGT |
-| 4 | version | 16位 | 1 |
+| 4 | version | 16位 | 2 |
 | 6 | message_type | 16位 | 见消息类型表 |
 | 8 | body_length | 32位 | JSON编码后的字节数 |
 | 12 | request_id | 64位 | 请求标识，响应原样返回 |
@@ -35,7 +35,7 @@
 CHAT_REQUEST、request_id=1、消息体为无换行的`{"query":"hello"}`，消息体长度为17字节，其头部应为：
 
 ```text
-52 41 47 54  00 01  00 01  00 00 00 11  00 00 00 00 00 00 00 01
+52 41 47 54  00 02  00 01  00 00 00 11  00 00 00 00 00 00 00 01
 ```
 
 头部后紧接17字节消息体，不添加分隔符、NUL或额外换行。JSON内部空白合法，但实际发送的空白也必须计入body_length。中文按UTF-8字节数计算，不能使用字符数。
@@ -48,6 +48,13 @@ CHAT_REQUEST、request_id=1、消息体为无换行的`{"query":"hello"}`，消�
 | RAG_REQUEST | 2 | 客户端→Agent | 本地知识库问答 |
 | CMD_REQUEST | 3 | 客户端→Agent | 受控操作 |
 | AGENT_REQUEST | 4 | 客户端→Agent | 默认Agent模式，可组合本次允许的工具 |
+| COMMAND_RESULT | 5 | 客户端→Agent | 原任务命令结果及一次性续行令牌 |
+| TASK_CANCEL | 6 | 客户端→Agent | 用户拒绝，结束整个任务 |
+| SESSION_OPEN | 7 | 客户端→Agent | 登记客户端工作区显示名称 |
+| TASK_HEARTBEAT | 8 | 客户端→Agent | 执行前验证任务仍有效 |
+| COMMAND_PROPOSAL | 102 | Agent→客户端 | commands及continuation，等待本地执行 |
+| SESSION_READY | 103 | Agent→客户端 | 工作区登记成功 |
+| TASK_STATUS | 104 | Agent→客户端 | 心跳响应active=true |
 | RESPONSE | 100 | Agent→客户端 | 业务成功 |
 | ERROR | 101 | Agent→客户端 | 请求失败 |
 | PING | 200 | 客户端→Agent | 网络存活检查 |
@@ -139,9 +146,9 @@ code用于程序判断，message用于展示，不应解析message文字；messa
 
 ## 4. 请求生命周期
 
-request_id从1开始，在同一连接中随请求（包括PING）递增且不复用；重连可从1重新开始。服务器遇到0或不递增的ID时关闭连接并记录协议错误，避免重复ID产生歧义。64位ID耗尽前客户端应重建连接。
+新请求的request_id从1开始，在同一连接中随请求（包括PING）递增且不复用；命令结果、取消和任务心跳使用原任务ID及当前continuation。重连可从1重新开始。服务器遇到0或不递增的ID时关闭连接并记录协议错误，避免重复ID产生歧义。64位ID耗尽前客户端应重建连接。
 
-同一连接允许多个在途请求，响应不保证请求顺序。客户端通过request_id匹配；第一版CLI一次仅发送并等待一个请求。客户端收到无对应在途请求的响应或非法服务端帧时，将连接视为异常并关闭。
+同一连接允许多个在途请求，响应不保证请求顺序。客户端通过request_id匹配；CLI一次仅发送并等待一个逻辑任务。客户端收到无对应在途请求的响应或非法服务端帧时，将连接视为异常并关闭。
 
 对合法请求，服务器生成一个终态结果：业务请求为RESPONSE或ERROR，PING为PONG或请求校验错误。连接可用时尝试发送；断开或发送失败后不保证送达，不跨连接补发。消息格式错误且边界可信时返回ERROR；无法信任消息头时直接关闭。
 
@@ -184,3 +191,26 @@ request_id从1开始，在同一连接中随请求（包括PING）递增且不�
 - 验证完成结果内存有界及有序停止；日志能解释未送达结果的原因。
 
 自动化覆盖及运行方式见[验证说明](testing.md)。
+
+## 7. 命令提案与续行
+
+客户端先发送SESSION_OPEN：`{"name":"my-project"}`，服务端返回SESSION_READY。
+名称仅用于显示，不是远程可选择的宿主机路径。CMD/AGENT初始请求仍为query对象。
+COMMAND_PROPOSAL与初始请求使用相同request_id，例如：
+
+```json
+{"commands":[{"id":"call-1","command":"ls -a","cwd":"."}],"continuation":"32位十六进制令牌"}
+```
+
+commands为1至4项；id非空且至多128字节，command非空且至多16384字节，cwd为至多512字节的
+工作区相对目录。每轮id不重复。服务端不发送私有模型历史、凭证或信任客户端提交的task_state。
+客户端独立验证整个提案，消耗令牌一次，重新分级，必要时从本地TTY确认。
+完成后COMMAND_RESULT携带同一continuation及按提案顺序的results；每项含id、status
+（success/failed/cancelled）、text（最多64 KiB）、effect（none/committed/unknown）。
+未知结果或清理失败停止后续执行。下一轮使用新令牌，整个任务最多4轮模型调用。
+
+TASK_CANCEL带continuation及已完成的结果前缀，立即结束整个任务，不再调用模型。
+TASK_HEARTBEAT带continuation，服务端返回TASK_STATUS；令牌仍有效且刷新等待期限。
+令牌绑定连接、任务和轮次；重复结果、旧令牌及跨连接令牌返回INVALID_REQUEST。
+确认等待15分钟过期后返回UPSTREAM_TIMEOUT并释放任务，客户端不得继续执行。
+断连释放私有状态并取消本机执行；已经完成的写入保留，不跨连接续行。
