@@ -1,10 +1,8 @@
 #include "protocol/protocol.h"
-#include "protocol/tool_validate.h"
+
 #include <ctype.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "protocol/cmd_exec.h"
 
 static uint64_t read_integer(const unsigned char *bytes, size_t offset, unsigned width)
 {
@@ -238,75 +236,19 @@ int handle_fixed_request(const Frame *request, Frame *response)
         return frame_make_error(
             request->request_id, "INVALID_REQUEST", "query必须是非空白字符串", response);
     }
-        // ---- 开始插入的工具调用模拟逻辑 ----
-    if (request->type == MESSAGE_CMD_REQUEST) {
-    
-        
-        json_object *args = json_object_new_object();
-        json_object_object_add(args, "cmd", json_object_new_string(query_text));
-        
-        json_object *args_array = json_object_new_array();
-        json_object_array_add(args_array, json_object_new_string("-l"));
-        json_object_object_add(args, "args", args_array);
 
-        ToolCall tc;
-        int status = validate_tool_call(TOOL_EXECUTE_COMMAND, args, &tc);
-        
-                // 记录安全审计日志
-        if (status != 0) {
-            fprintf(stderr, "[SECURITY] 拦截危险命令! 原始输入: %s | 原因: %s\n", query_text, tc.error_msg);
-        } else {
-            fprintf(stderr, "[AUDIT] 校验通过，执行命令: %s\n", tc.cmd);
-        }
-        
-        
-        json_object *mock_result = json_object_new_object();
-        
-     
-             if (status == 0) {
-            // ========= 校验通过：真正执行系统命令 =========
-          
-            // 这里的参数暂时写死成 "-l" 来测试，以后可以从 tc.args_json 里解析
-            char *args[] = { (char*)tc.cmd, "-l", NULL };
-            char exec_output[2048] = {0}; // 限制最多抓 2KB 的输出，防止内存溢出
-            
-            execute_command_safely(tc.cmd, args, exec_output, sizeof(exec_output));
-            
-            // 将真实的输出结果放进 JSON 里
-            json_object_object_add(mock_result, "tool_name", json_object_new_string(TOOL_EXECUTE_COMMAND));
-            json_object_object_add(mock_result, "status", json_object_new_string("success"));
-            json_object_object_add(mock_result, "text", json_object_new_string(exec_output)); // 这里填入真实结果
-            json_object_object_add(mock_result, "sources", json_object_new_array());
-
-            const char *encoded = json_object_to_json_string_ext(mock_result, JSON_C_TO_STRING_PLAIN);
-            int final_status = frame_set_body(response, MESSAGE_RESPONSE, request->request_id, encoded, strlen(encoded));
-
-            json_object_put(mock_result);
-            json_object_put(args);
-            json_object_put(body);
-            return final_status;
-            
-        } else {
-            // ========= 校验失败：直接返回错误并拦截 =========
-            json_object_put(mock_result);
-            json_object_put(args);
-            json_object_put(body);
-            
-            return frame_make_error(request->request_id, "SECURITY_ERROR", tc.error_msg, response);
-        }
-    } 
-    // ---- 结束插入的工具调用模拟逻辑 ----
-
-   
     json_object *result = json_object_new_object();
     json_object *text = json_object_new_string_len("server received: ", 17);
     if (result == NULL || text == NULL) {
-        if (result != NULL) json_object_put(result);
-        if (text != NULL) json_object_put(text);
+        if (result != NULL) {
+            json_object_put(result);
+        }
+        if (text != NULL) {
+            json_object_put(text);
+        }
         json_object_put(body);
         return -1;
     }
-    
     const size_t prefix_length = (size_t)json_object_get_string_len(text);
     char *response_text = malloc(prefix_length + query_length + 1);
     if (response_text == NULL) {
@@ -318,21 +260,23 @@ int handle_fixed_request(const Frame *request, Frame *response)
     memcpy(response_text, json_object_get_string(text), prefix_length);
     memcpy(response_text + prefix_length, query_text, query_length);
     response_text[prefix_length + query_length] = '\0';
-    
-    json_object_object_add(result, "text", json_object_new_string_len(response_text, (int)(prefix_length + query_length)));
+    json_object_object_add(
+        result,
+        "text",
+        json_object_new_string_len(response_text, (int)(prefix_length + query_length)));
     free(response_text);
     json_object_put(text);
     json_object_object_add(result, "sources", json_object_new_array());
-    
     const char *encoded = json_object_to_json_string_ext(result, JSON_C_TO_STRING_PLAIN);
     const size_t encoded_length = strlen(encoded);
-    
     int status;
-    status = frame_make_error(request->request_id, "INTERNAL_ERROR", "编码后的响应超过消息体上限", response);
-    if (encoded_length <= RAGENT_MAX_BODY_SIZE) {
-        status = frame_set_body(response, MESSAGE_RESPONSE, request->request_id, encoded, encoded_length);
+    if (encoded_length > RAGENT_MAX_BODY_SIZE) {
+        status = frame_make_error(
+            request->request_id, "INTERNAL_ERROR", "编码后的响应超过消息体上限", response);
+    } else {
+        status = frame_set_body(
+            response, MESSAGE_RESPONSE, request->request_id, encoded, encoded_length);
     }
-    
     json_object_put(result);
     json_object_put(body);
     return status;
