@@ -24,12 +24,14 @@ class WorkerIntegrationTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=log,
             )
+            stdout = process.stdout
+            assert stdout is not None
             children = []
             try:
                 with selectors.DefaultSelector() as selector:
-                    selector.register(process.stdout, selectors.EVENT_READ)
+                    selector.register(stdout, selectors.EVENT_READ)
                     self.assertTrue(selector.select(120), "工作进程未就绪")
-                line = process.stdout.readline().decode()
+                line = stdout.readline().decode()
                 self.assertIn("workers=4", line)
                 port = int(line.split()[2].rsplit(":", 1)[1])
                 children = (
@@ -73,7 +75,7 @@ class WorkerIntegrationTests(unittest.TestCase):
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
-                process.stdout.close()
+                stdout.close()
                 for child in children:
                     if Path(f"/proc/{child}").exists():
                         os.kill(int(child), signal.SIGKILL)

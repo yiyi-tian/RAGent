@@ -154,6 +154,7 @@ async def main_async(args):
             tasks = []
             sampler = None
             try:
+                assert server.stdout is not None
                 line = await asyncio.wait_for(server.stdout.readline(), 10)
                 if not line.startswith(b"Listening on "):
                     raise RuntimeError("C 服务启动失败")

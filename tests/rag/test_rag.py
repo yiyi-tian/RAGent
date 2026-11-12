@@ -3,6 +3,7 @@
 import json
 import threading
 import unittest
+from typing import Any, assert_type
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
@@ -123,6 +124,19 @@ class RagTests(unittest.TestCase):
         self.embedding = Embedding(self.url + "/v1", "test-model", "test-key")
         self.store = Qdrant(self.url, "manual", "test-model", self.url + "/v1")
 
+    def test_missing_collection_is_optional_only_when_requested(self):
+        missing = self.store._call("GET", allow_missing=True)
+        assert_type(missing, dict[str, Any] | None)
+        self.assertIsNone(missing)
+        with self.assertRaisesRegex(ServiceError, "404"):
+            self.store._call("GET")
+        with self.assertRaisesRegex(ServiceError, "404"):
+            self.store.check_ready()
+        self.store.ensure_collection(3, create=True)
+        info = self.store._call("GET")
+        assert_type(info, dict[str, Any])
+        self.assertEqual(info["result"]["config"]["params"]["vectors"]["size"], 3)
+
     def test_manual_chunks_are_stable_and_traceable(self):
         with (
             patch("rag.corpus.find_manual", return_value=("/test/man/passwd.1.gz", "zh_CN")),
@@ -229,7 +243,9 @@ class RagTests(unittest.TestCase):
         self.store.retrieval_strategy = "context"
         before = len(Handler.batch_sizes)
         result = search_linux_manual("first option", self.embedding, self.store)
-        self.assertTrue(self.store.search_index.multigrain)
+        index = self.store.search_index
+        assert index is not None
+        self.assertTrue(index.multigrain)
         self.assertEqual(len(Handler.batch_sizes), before + 1)
         self.assertTrue(result)
         self.assertTrue(all(0 < item["score"] < 0.9 for item in result))

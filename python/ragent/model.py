@@ -77,7 +77,7 @@ class DeepSeekModel:
                     await response.aread()
                     timing["body"] = time.monotonic()
 
-        self.client = DeepSeekChat(
+        self.client: ChatOpenAI = DeepSeekChat(
             model=model,
             base_url=url,
             api_key=SecretStr(key),

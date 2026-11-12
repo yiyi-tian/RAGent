@@ -11,11 +11,13 @@ import socket
 import ssl
 import threading
 import time
+from typing import Any, Literal, overload
 import urllib.error
 import urllib.parse
 import urllib.request
 import httpx2
 
+from .context import ManualContext
 from .runtime import RequestExpired, remaining_timeout
 
 MAX_RESPONSE = 8 * 1024 * 1024
@@ -293,7 +295,7 @@ class Qdrant:
         if strategy not in ("vector", "context"):
             raise ValueError("检索策略必须为 vector 或 context")
         self.retrieval_strategy = strategy
-        self.search_index = None
+        self.search_index: ManualContext | None = None
         self.index_lock = threading.Lock()
         self.verified_collection = None
         self.url = self.base_url + "/collections/" + collection
@@ -303,7 +305,18 @@ class Qdrant:
         ).hexdigest()
         self.timeout = timeout
 
+    @overload
+    def _call(
+        self, method, path="", data=None, *, allow_missing: Literal[True], timeout=None
+    ) -> dict[str, Any] | None: ...
+
+    @overload
+    def _call(
+        self, method, path="", data=None, allow_missing: Literal[False] = False, timeout=None
+    ) -> dict[str, Any]: ...
+
     def _call(self, method, path="", data=None, allow_missing=False, timeout=None):
+        """仅 allow_missing=True 时允许集合不存在并返回 None；其他失败抛出 ServiceError。"""
         headers = {}
         if os.environ.get("RAGENT_QDRANT_API_KEY"):
             headers["api-key"] = os.environ["RAGENT_QDRANT_API_KEY"]
@@ -459,8 +472,6 @@ class Qdrant:
     def prepare_search(self):
         if self.retrieval_strategy != "context" or self.search_index is not None:
             return
-        from .context import ManualContext
-
         with self.index_lock:
             if self.search_index is not None:
                 return
@@ -506,7 +517,7 @@ class Qdrant:
             raise ServiceError("Qdrant 检索响应格式错误") from error
 
     def search_multigrain(self, vector, limit):
-        indexed = self.search_index is not None
+        index = self.search_index
         searches = []
         for version in ("paragraph-v2", "entry-v3"):
             searches.append(
@@ -514,7 +525,7 @@ class Qdrant:
                     "query": vector,
                     "limit": limit,
                     # 正文已在启动时校验并加载，在线仅需实时命中ID和分数。
-                    "with_payload": not indexed,
+                    "with_payload": index is None,
                     "filter": {"must": [{"key": "chunking_version", "match": {"value": version}}]},
                 }
             )
@@ -524,19 +535,19 @@ class Qdrant:
             if not isinstance(result, list) or len(result) != 2:
                 raise ValueError
             return (
-                self._matches(result[0]["points"], indexed),
-                self._matches(result[1]["points"], indexed),
+                self._matches(result[0]["points"], index),
+                self._matches(result[1]["points"], index),
             )
         except (KeyError, TypeError, ValueError) as error:
             raise ServiceError("Qdrant 批量检索响应格式错误") from error
 
-    def _matches(self, points, indexed=False):
+    def _matches(self, points, index: ManualContext | None = None):
         if not isinstance(points, list):
             raise ValueError
         matches = []
         for point in points:
-            if indexed:
-                payload = self.search_index.chunks[str(point["id"])]
+            if index is not None:
+                payload = index.chunks[str(point["id"])]
             else:
                 payload = self._point_payload(point)
             score = point["score"]

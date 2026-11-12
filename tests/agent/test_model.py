@@ -9,9 +9,11 @@ from types import SimpleNamespace
 
 from aiohttp import web
 from aiohttp.test_utils import TestServer
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from openai import DefaultAsyncHttpxClient, DefaultHttpxClient
+
+from pydantic import SecretStr
 
 from ragent.errors import ModelError
 from ragent.model import DeepSeekChat, DeepSeekModel
@@ -34,12 +36,13 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             return AIMessage(content=messages[-1].content)
 
         runnable = SimpleNamespace(ainvoke=AsyncMock(side_effect=respond))
-        model.client = SimpleNamespace(bind_tools=Mock(return_value=runnable))
+        binding = Mock(return_value=runnable)
+        self.enterContext(patch.object(model, "client", SimpleNamespace(bind_tools=binding)))
         first, second = await asyncio.gather(
             model.ainvoke([HumanMessage(content="第一个请求")], ["diagnose"]),
             model.ainvoke([HumanMessage(content="第二个请求")], ["diagnose"]),
         )
-        model.client.bind_tools.assert_called_once()
+        binding.assert_called_once()
         self.assertEqual(runnable.ainvoke.await_count, 2)
         self.assertEqual(first.content, "第一个请求")
         self.assertEqual(second.content, "第二个请求")
@@ -88,7 +91,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             for implementation in (ChatOpenAI, DeepSeekChat):
                 client = implementation(
                     model="fixture",
-                    api_key="fixture",
+                    api_key=SecretStr("fixture"),
                     base_url=str(server.make_url("/")),
                     max_retries=0,
                     max_completion_tokens=2048,
@@ -126,7 +129,7 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             model = DeepSeekModel(1, before_call=reserve)
         await model.close()
         client = SimpleNamespace(ainvoke=AsyncMock(return_value=AIMessage(content="完成")))
-        model.client = client
+        self.enterContext(patch.object(model, "client", client))
         task = asyncio.create_task(model.ainvoke([HumanMessage(content="问题")], []))
         try:
             self.assertTrue(await asyncio.to_thread(entered.wait, 1))
@@ -161,7 +164,14 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
         model = DeepSeekModel.__new__(DeepSeekModel)
         asynchronous = SimpleNamespace(close=AsyncMock(side_effect=OSError("受控关闭失败")))
         synchronous = SimpleNamespace(close=Mock())
-        model.client = SimpleNamespace(root_async_client=asynchronous, root_client=synchronous)
+        self.enterContext(
+            patch.object(
+                model,
+                "client",
+                SimpleNamespace(root_async_client=asynchronous, root_client=synchronous),
+                create=True,
+            )
+        )
         with self.assertRaisesRegex(OSError, "受控关闭失败"):
             await model.close()
         asynchronous.close.assert_awaited_once()
@@ -224,13 +234,13 @@ class ModelTests(unittest.IsolatedAsyncioTestCase):
             await model.close()
             model.client = DeepSeekChat(
                 model="test",
-                api_key="test",
+                api_key=SecretStr("test"),
                 base_url=str(server.make_url("/")),
                 max_retries=0,
                 timeout=1,
             )
             self.addAsyncCleanup(model.close)
-            messages = [HumanMessage(content="问题")]
+            messages: list[BaseMessage] = [HumanMessage(content="问题")]
             response = await model.ainvoke(messages, [])
             self.assertEqual(response.content, "完成")
             self.assertNotIn("tools", requests[-1])

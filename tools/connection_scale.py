@@ -24,6 +24,7 @@ async def measure(output="artifacts/performance/target-idle1000.json", driver="s
     )
     connections = []
     try:
+        assert process.stdout is not None
         line = await asyncio.wait_for(process.stdout.readline(), 30)
         port = int(line.rsplit(b":", 1)[1])
         if driver == "native":

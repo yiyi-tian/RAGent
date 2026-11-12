@@ -166,6 +166,7 @@ DeepSeek 模型默认并发上限为 32，可用 RAGENT_MODEL_CONCURRENCY 设置
 ## 开发与后续工作
 
 ```bash
+.venv/bin/python -m compileall -q python rag tools tests
 .venv/bin/pyright --pythonpath .venv/bin/python
 .venv/bin/black --check python rag tools tests
 ```

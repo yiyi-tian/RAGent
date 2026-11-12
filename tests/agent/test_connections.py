@@ -27,7 +27,7 @@ class ConnectionTests(unittest.IsolatedAsyncioTestCase):
                     "/missing": 404,
                     "/redirect": 302,
                 }.get(self.path, 200)
-                data = {"ok": True}
+                data: dict[str, bool | str] = {"ok": True}
                 if self.path == "/large":
                     data["padding"] = "a" * 100
                 body = json.dumps(data).encode()

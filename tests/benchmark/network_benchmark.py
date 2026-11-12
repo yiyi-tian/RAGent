@@ -59,8 +59,10 @@ def main():
         server = subprocess.Popen(
             [args.server, "--port", "0"], stdout=subprocess.PIPE, stderr=log, text=True
         )
+        stdout = server.stdout
+        assert stdout is not None
         try:
-            line = server.stdout.readline()
+            line = stdout.readline()
             if not line.startswith("Listening on "):
                 raise RuntimeError("服务器启动失败")
             port = int(line.strip().rsplit(":", 1)[1])
@@ -83,7 +85,7 @@ def main():
         finally:
             server.terminate()
             server.wait(timeout=10)
-            server.stdout.close()
+            stdout.close()
 
 
 if __name__ == "__main__":

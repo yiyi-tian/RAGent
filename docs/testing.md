@@ -8,9 +8,14 @@
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build -j 2
 ctest --test-dir build --output-on-failure
+.venv/bin/python -m compileall -q python rag tools tests
 .venv/bin/pyright --pythonpath .venv/bin/python
 .venv/bin/black --check python rag tools tests
 ```
+
+Pyright统一覆盖`python/ragent`、`rag`、`tools`和`tests`，不能只凭单个目录通过宣称全部类型检查通过。
+GitHub Actions在push及pull request时执行同范围的语法、类型、格式、Release构建与回归检查，
+使用Mock和本地受控接口，无需配置云端密钥。检查失败须修复后再交付；分支保护仍由仓库管理员配置。
 
 CTest 包含线程池背压、部署脚本、RAG、并发、网络、Agent、固定工作进程和
 独立 C 负载发生器八项。

@@ -226,7 +226,8 @@ class BenchmarkTests(unittest.IsolatedAsyncioTestCase):
             },
         ):
             model = DeepSeekModel(2, observe=lambda *event: events.append(event))
-        model.client = Client()
+        await model.close()
+        self.enterContext(patch.object(model, "client", Client()))
         await asyncio.gather(*(model.ainvoke([HumanMessage(content="测试")], []) for _ in range(6)))
         self.assertEqual(maximum, 2)
         self.assertEqual(sum(event[0] == "model" for event in events), 6)

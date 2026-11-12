@@ -59,10 +59,13 @@ class RunningServer:
             stderr=self.log,
             text=True,
         )
-        if not select.select([self.process.stdout], [], [], 10)[0]:
+        stdout = self.process.stdout
+        assert stdout is not None
+        self.stdout = stdout
+        if not select.select([self.stdout], [], [], 10)[0]:
             self.close()
             raise AssertionError("服务器启动超时")
-        line = self.process.stdout.readline().strip()
+        line = self.stdout.readline().strip()
         if not line.startswith("Listening on 127.0.0.1:"):
             self.close()
             raise AssertionError(f"服务器启动失败: {line}")
@@ -82,7 +85,7 @@ class RunningServer:
                 self.process.kill()
                 self.process.wait()
                 raise AssertionError("服务器未正常停止")
-        self.process.stdout.close()
+        self.stdout.close()
         self.log.seek(0)
         log_output = self.log.read(8192)
         self.log.close()
@@ -117,6 +120,7 @@ os.execv(sys.argv[1], sys.argv[1:])
             text=True,
         )
         try:
+            assert process.stdout is not None
             self.assertTrue(select.select([process.stdout], [], [], 10)[0])
             self.assertTrue(process.stdout.readline().startswith("Listening on"))
             soft, _ = resource.prlimit(process.pid, resource.RLIMIT_NOFILE)
@@ -419,6 +423,7 @@ os.execv(sys.argv[1], sys.argv[1:])
             text=True,
         )
         try:
+            assert process.stdout is not None
             self.assertTrue(select.select([process.stdout], [], [], 5)[0])
             process.send_signal(signal.SIGINT)
             process.communicate(timeout=5)
@@ -496,6 +501,7 @@ class ClientPeerTests(unittest.TestCase):
             )
             try:
                 listener.settimeout(5)
+                assert process.stdin is not None
                 with listener.accept()[0] as connection:
                     process.stdin.write("直接提问\n")
                     process.stdin.flush()

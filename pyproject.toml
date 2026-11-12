@@ -39,7 +39,7 @@ line-length = 100
 target-version = ["py311"]
 
 [tool.pyright]
-include = ["python/ragent"]
+include = ["python/ragent", "rag", "tools", "tests"]
 extraPaths = ["python", "."]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"

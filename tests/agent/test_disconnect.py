@@ -80,6 +80,7 @@ class DisconnectTests(unittest.TestCase):
                         stderr=log,
                         text=True,
                     )
+                    assert process.stdout is not None
                     port = int(process.stdout.readline().strip().rsplit(":", 1)[1])
                     with socket.create_connection(("127.0.0.1", port), timeout=3) as first:
                         first.settimeout(3)

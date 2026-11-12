@@ -45,6 +45,7 @@ class AgentTests(unittest.IsolatedAsyncioTestCase):
         class Slow:
             async def ainvoke(self, messages, allowed):
                 await asyncio.sleep(1)
+                return AIMessage(content="完成")
 
         with self.assertRaises(ModelError) as raised:
             await answer("测试", "chat", Slow(), timeout=0.01)
