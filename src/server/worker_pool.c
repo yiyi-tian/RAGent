@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #include "server/worker_pool.h"
 #include "server/agent_http.h"
-
+#include "protocol/protocol.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -129,9 +129,7 @@ static void *worker_main(void *argument)
         if (delay_text != NULL &&
             (getenv("RAGENT_TEST_DELAY_FIRST_ONLY") == NULL || item.frame.request_id == 1)) {
             unsigned delay = (unsigned)strtoul(delay_text, NULL, 10);
-            fprintf(stderr,
-                    "[TEST] stage=task_start req=%llu\n",
-                    (unsigned long long)item.frame.request_id);
+            fprintf(stderr, "[TEST] stage=task_start req=%llu\n", (unsigned long long)item.frame.request_id);
             struct timespec pause = {
                 .tv_sec = delay / 1000,
                 .tv_nsec = (long)(delay % 1000) * 1000000L,
@@ -152,21 +150,27 @@ static void *worker_main(void *argument)
             pthread_mutex_unlock(&pool->mutex);
             continue;
         }
+
         uint64_t started_ns = monotonic_ns();
         Frame response = {0};
         int status;
         uint64_t elapsed_ms = (started_ns - enqueued_ns) / 1000000ULL;
+        
         if (started_ns == 0 || enqueued_ns == 0) {
-            status = frame_make_error(item.frame.request_id, "INTERNAL_ERROR",
-                                      "无法读取请求时钟", &response);
+            status = frame_make_error(item.frame.request_id, "INTERNAL_ERROR", "无法读取请求时钟", &response);
         } else if (elapsed_ms >= pool->timeout_ms) {
-            status = frame_make_error(item.frame.request_id, "UPSTREAM_TIMEOUT",
-                                      "请求排队后已超过时限，未执行", &response);
+            status = frame_make_error(item.frame.request_id, "UPSTREAM_TIMEOUT", "请求排队后已超过时限，未执行", &response);
         } else {
             unsigned remaining_ms = pool->timeout_ms - (unsigned)elapsed_ms;
-            status = agent_http_request_controlled(&item.frame, remaining_ms,
-                                                   item.lifetime, &response);
+            
+            // 🚨 终极截胡：如果是 CMD 命令，直接走你写的安全校验与真实执行，不发给 Python！
+           if (item.frame.type == MESSAGE_CMD_REQUEST) {
+               status = handle_fixed_request(&item.frame, &response);
+            } else {
+                status = agent_http_request_controlled(&item.frame, remaining_ms, item.lifetime, &response);
+            }
         }
+
         pthread_mutex_lock(&pool->mutex);
         --pool->active_count;
         log_task_event(&item, "completed");
@@ -174,6 +178,7 @@ static void *worker_main(void *argument)
         size_t active = pool->active_count;
         size_t results = pool->result_count;
         pthread_mutex_unlock(&pool->mutex);
+        
         if (getenv("RAGENT_METRICS") != NULL && enqueued_ns != 0) {
             fprintf(stderr,
                     "[PERF] conn=%llu req=%llu queue_ms=%.3f http_ms=%.3f "
@@ -183,12 +188,12 @@ static void *worker_main(void *argument)
                     (started_ns - enqueued_ns) / 1000000.0,
                     (monotonic_ns() - started_ns) / 1000000.0, queued, active, results);
         }
+        
         uint64_t request_id = item.frame.request_id;
         frame_destroy(&item.frame);
         worker_lifetime_release(item.lifetime);
         item.lifetime = NULL;
-        if (status != 0 &&
-            frame_make_error(request_id, "INTERNAL_ERROR", "处理请求失败", &response) != 0) {
+        if (status != 0 && frame_make_error(request_id, "INTERNAL_ERROR", "处理请求失败", &response) != 0) {
             response.request_id = request_id;
         }
         item.frame = response;
