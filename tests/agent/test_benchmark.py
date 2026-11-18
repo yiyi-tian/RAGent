@@ -254,7 +254,7 @@ class SocketProbeTests(unittest.IsolatedAsyncioTestCase):
                     try:
                         header = HEADER.unpack(await reader.readexactly(20))
                         await reader.readexactly(header[3])
-                        response = HEADER.pack(0x52414754, 1, 201, len(payload), response_id)
+                        response = HEADER.pack(0x52414754, 2, 201, len(payload), response_id)
                         writer.write(response[:7])
                         await writer.drain()
                         await asyncio.sleep(0.01)

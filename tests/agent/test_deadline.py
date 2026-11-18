@@ -107,9 +107,9 @@ class DeadlineTests(unittest.IsolatedAsyncioTestCase):
                             frames = []
                             for request_id in (1, 2):
                                 frames.append(
-                                    HEADER.pack(0x52414754, 1, 1, len(body), request_id) + body
+                                    HEADER.pack(0x52414754, 2, 1, len(body), request_id) + body
                                 )
-                            frames.append(HEADER.pack(0x52414754, 1, 200, 2, 3) + b"{}")
+                            frames.append(HEADER.pack(0x52414754, 2, 200, 2, 3) + b"{}")
                             connection.sendall(b"".join(frames))
                             results = {}
                             for _ in range(3):

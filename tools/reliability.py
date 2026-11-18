@@ -236,10 +236,10 @@ async def exchange(port, identity, query, mode):
         async with asyncio.timeout(130):
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             body = json.dumps({"query": query}).encode()
-            writer.write(HEADER.pack(0x52414754, 1, mode, len(body), identity) + body)
+            writer.write(HEADER.pack(0x52414754, 2, mode, len(body), identity) + body)
             await writer.drain()
             header = HEADER.unpack(await reader.readexactly(20))
-            if header[:2] != (0x52414754, 1) or header[4] != identity or header[3] > 1048576:
+            if header[:2] != (0x52414754, 2) or header[4] != identity or header[3] > 1048576:
                 raise ValueError("响应帧头非法")
             response = json.loads(await reader.readexactly(header[3]))
             if header[2] == 101:

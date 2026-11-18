@@ -1,13 +1,14 @@
 #define _GNU_SOURCE
 #include "server/worker_pool.h"
 #include "server/agent_http.h"
-
+#include "protocol/protocol.h"
 #include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <time.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 
@@ -56,6 +57,12 @@ struct WorkerPool {
     pthread_cond_t result_space;
     pthread_t *threads;
     unsigned started;
+    bool sessions_enabled;
+    bool maintenance_claimed;
+    char *snapshot;
+    uint64_t snapshot_sequence;
+    uint64_t completed_sequence;
+    bool sync_success;
     QueuedTask *tasks;
     size_t task_capacity;
     size_t task_head;
@@ -105,17 +112,52 @@ static void notify_network(WorkerPool *pool)
     }
 }
 
+static void *maintain_sessions(WorkerPool *pool)
+{
+    for (;;) {
+        pthread_mutex_lock(&pool->mutex);
+        while (!pool->stopping && pool->snapshot == NULL) {
+            pthread_cond_wait(&pool->tasks_ready, &pool->mutex);
+        }
+        if (pool->stopping) {
+            pthread_mutex_unlock(&pool->mutex);
+            return NULL;
+        }
+        char *snapshot = pool->snapshot;
+        uint64_t sequence = pool->snapshot_sequence;
+        pool->snapshot = NULL;
+        pthread_mutex_unlock(&pool->mutex);
+        bool success = agent_http_sync_sessions(snapshot);
+        free(snapshot);
+        pthread_mutex_lock(&pool->mutex);
+        pool->completed_sequence = sequence;
+        pool->sync_success = success;
+        pthread_cond_broadcast(&pool->tasks_ready);
+        pthread_mutex_unlock(&pool->mutex);
+        if (!success) {
+            fprintf(stderr, "[WARN] workspace snapshot sync failed seq=%llu\n",
+                    (unsigned long long)sequence);
+        }
+    }
+}
+
 static void *worker_main(void *argument)
 {
     WorkerPool *pool = argument;
     for (;;) {
         pthread_mutex_lock(&pool->mutex);
-        while (!pool->stopping && pool->task_count == 0) {
+        while (!pool->stopping && pool->task_count == 0 &&
+               !(pool->sessions_enabled && !pool->maintenance_claimed)) {
             pthread_cond_wait(&pool->tasks_ready, &pool->mutex);
         }
         if (pool->stopping) {
             pthread_mutex_unlock(&pool->mutex);
             break;
+        }
+        if (pool->sessions_enabled && !pool->maintenance_claimed) {
+            pool->maintenance_claimed = true;
+            pthread_mutex_unlock(&pool->mutex);
+            return maintain_sessions(pool);
         }
         WorkItem item = pool->tasks[pool->task_head].item;
         uint64_t enqueued_ns = pool->tasks[pool->task_head].enqueued_ns;
@@ -129,9 +171,7 @@ static void *worker_main(void *argument)
         if (delay_text != NULL &&
             (getenv("RAGENT_TEST_DELAY_FIRST_ONLY") == NULL || item.frame.request_id == 1)) {
             unsigned delay = (unsigned)strtoul(delay_text, NULL, 10);
-            fprintf(stderr,
-                    "[TEST] stage=task_start req=%llu\n",
-                    (unsigned long long)item.frame.request_id);
+            fprintf(stderr, "[TEST] stage=task_start req=%llu\n", (unsigned long long)item.frame.request_id);
             struct timespec pause = {
                 .tv_sec = delay / 1000,
                 .tv_nsec = (long)(delay % 1000) * 1000000L,
@@ -152,21 +192,29 @@ static void *worker_main(void *argument)
             pthread_mutex_unlock(&pool->mutex);
             continue;
         }
+
         uint64_t started_ns = monotonic_ns();
         Frame response = {0};
         int status;
         uint64_t elapsed_ms = (started_ns - enqueued_ns) / 1000000ULL;
+        
         if (started_ns == 0 || enqueued_ns == 0) {
-            status = frame_make_error(item.frame.request_id, "INTERNAL_ERROR",
-                                      "无法读取请求时钟", &response);
+            status = frame_make_error(item.frame.request_id, "INTERNAL_ERROR", "无法读取请求时钟", &response);
         } else if (elapsed_ms >= pool->timeout_ms) {
-            status = frame_make_error(item.frame.request_id, "UPSTREAM_TIMEOUT",
-                                      "请求排队后已超过时限，未执行", &response);
+            status = frame_make_error(item.frame.request_id, "UPSTREAM_TIMEOUT", "请求排队后已超过时限，未执行", &response);
         } else {
             unsigned remaining_ms = pool->timeout_ms - (unsigned)elapsed_ms;
-            status = agent_http_request_controlled(&item.frame, remaining_ms,
-                                                   item.lifetime, &response);
-        }
+
+            // 如果是 CMD 命令，走 C 端安全校验与执行
+            if (item.frame.type == MESSAGE_CMD_REQUEST) {
+                status = handle_fixed_request(&item.frame, &response);
+            } else {
+                // 其他模式发给 Python，注意这里要加上组员新加的 connection_id 参数
+                status = agent_http_request_controlled(&item.frame, remaining_ms,
+                                                       item.lifetime, item.connection_id, &response);
+            }
+}
+
         pthread_mutex_lock(&pool->mutex);
         --pool->active_count;
         log_task_event(&item, "completed");
@@ -174,6 +222,7 @@ static void *worker_main(void *argument)
         size_t active = pool->active_count;
         size_t results = pool->result_count;
         pthread_mutex_unlock(&pool->mutex);
+        
         if (getenv("RAGENT_METRICS") != NULL && enqueued_ns != 0) {
             fprintf(stderr,
                     "[PERF] conn=%llu req=%llu queue_ms=%.3f http_ms=%.3f "
@@ -183,12 +232,12 @@ static void *worker_main(void *argument)
                     (started_ns - enqueued_ns) / 1000000.0,
                     (monotonic_ns() - started_ns) / 1000000.0, queued, active, results);
         }
+        
         uint64_t request_id = item.frame.request_id;
         frame_destroy(&item.frame);
         worker_lifetime_release(item.lifetime);
         item.lifetime = NULL;
-        if (status != 0 &&
-            frame_make_error(request_id, "INTERNAL_ERROR", "处理请求失败", &response) != 0) {
+        if (status != 0 && frame_make_error(request_id, "INTERNAL_ERROR", "处理请求失败", &response) != 0) {
             response.request_id = request_id;
         }
         item.frame = response;
@@ -283,7 +332,11 @@ bool worker_pool_submit(WorkerPool *pool, WorkItem *item)
     item->frame.body = NULL;
     ++pool->task_count;
     log_task_event(item, "accepted");
-    pthread_cond_signal(&pool->tasks_ready);
+    if (pool->sessions_enabled) {
+        pthread_cond_broadcast(&pool->tasks_ready);
+    } else {
+        pthread_cond_signal(&pool->tasks_ready);
+    }
     pthread_mutex_unlock(&pool->mutex);
     return true;
 }
@@ -339,6 +392,7 @@ void worker_pool_destroy(WorkerPool *pool)
     if (pool->event_fd >= 0) {
         close(pool->event_fd);
     }
+    free(pool->snapshot);
     free(pool->threads);
     free(pool->tasks);
     free(pool->results);
@@ -357,3 +411,51 @@ unsigned worker_pool_test_waiting_results(WorkerPool *pool)
     return count;
 }
 #endif
+
+bool worker_pool_enable_sessions(WorkerPool *pool)
+{
+    pthread_mutex_lock(&pool->mutex);
+    bool ok = pool->started >= 2;
+    pool->sessions_enabled = ok;
+    pthread_cond_broadcast(&pool->tasks_ready);
+    pthread_mutex_unlock(&pool->mutex);
+    return ok;
+}
+
+bool worker_pool_sync_sessions(WorkerPool *pool, json_object *snapshot, uint64_t sequence)
+{
+    char *text = strdup(json_object_to_json_string_ext(snapshot, JSON_C_TO_STRING_PLAIN));
+    if (text == NULL) {
+        return false;
+    }
+    pthread_mutex_lock(&pool->mutex);
+    free(pool->snapshot);
+    pool->snapshot = text;
+    pool->snapshot_sequence = sequence;
+    pthread_cond_broadcast(&pool->tasks_ready);
+    pthread_mutex_unlock(&pool->mutex);
+    return true;
+}
+
+bool worker_pool_wait_sessions(WorkerPool *pool, uint64_t sequence, unsigned timeout_ms)
+{
+    struct timespec until;
+    if (clock_gettime(CLOCK_REALTIME, &until) != 0) {
+        return false;
+    }
+    until.tv_sec += timeout_ms / 1000;
+    until.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+    if (until.tv_nsec >= 1000000000L) {
+        ++until.tv_sec;
+        until.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&pool->mutex);
+    while (!pool->stopping && pool->completed_sequence < sequence) {
+        if (pthread_cond_timedwait(&pool->tasks_ready, &pool->mutex, &until) != 0) {
+            break;
+        }
+    }
+    bool ok = pool->completed_sequence >= sequence && pool->sync_success;
+    pthread_mutex_unlock(&pool->mutex);
+    return ok;
+}

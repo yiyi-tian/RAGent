@@ -15,11 +15,12 @@ import unittest
 
 
 class WorkerIntegrationTests(unittest.TestCase):
-    def run_case(self, fail_worker):
+    def run_case(self, fail_worker, local_commands=False):
         with tempfile.TemporaryFile() as log:
             env = dict(os.environ, RAGENT_MODEL_CONCURRENCY="8", RAGENT_RETRIEVAL_WORKERS="4")
+            arguments = [sys.executable, "-m", "ragent", "--workers", "4", "--port", "0"]
             process = subprocess.Popen(
-                [sys.executable, "-m", "ragent", "--workers", "4", "--port", "0"],
+                arguments,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=log,
@@ -47,13 +48,66 @@ class WorkerIntegrationTests(unittest.TestCase):
                 def request(identity):
                     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
                     try:
-                        body = {"request_id": str(identity), "mode": "agent", "query": "测试问题"}
-                        connection.request(
-                            "POST", "/agent", json.dumps(body), {"Content-Type": "application/json"}
-                        )
+                        if local_commands:
+                            body = {
+                                "request_id": str(identity),
+                                "mode": "cmd",
+                                "query": "输出目录",
+                                "workspace": {"name": "fixture"},
+                            }
+                            connection.request(
+                                "POST",
+                                "/tasks",
+                                json.dumps(body),
+                                {"Content-Type": "application/json"},
+                            )
+                            response = connection.getresponse()
+                            self.assertEqual(response.status, 200)
+                            proposal = json.loads(response.read())
+                            self.assertEqual(proposal["kind"], "command_proposal")
+                            command = proposal["commands"][0]
+                            self.assertEqual(command["command"], "pwd")
+                            state = proposal["state"]
+                            connection.close()
+                            # 重新建立连接，使下一阶段可落到任意一个HTTP工作进程。
+                            connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                            body = {
+                                "request_id": str(identity),
+                                "mode": "cmd",
+                                "task_state": state,
+                                "results": [
+                                    {
+                                        "id": command["id"],
+                                        "status": "success",
+                                        "effect": "none",
+                                        "text": "fixture-directory",
+                                    }
+                                ],
+                            }
+                            connection.request(
+                                "POST",
+                                "/tasks",
+                                json.dumps(body),
+                                {"Content-Type": "application/json"},
+                            )
+                        else:
+                            body = {
+                                "request_id": str(identity),
+                                "mode": "chat",
+                                "query": "测试问题",
+                            }
+                            connection.request(
+                                "POST",
+                                "/agent",
+                                json.dumps(body),
+                                {"Content-Type": "application/json"},
+                            )
                         response = connection.getresponse()
                         self.assertEqual(response.status, 200)
-                        self.assertIn("模拟回答", json.loads(response.read())["text"])
+                        text = json.loads(response.read())["text"]
+                        self.assertIn("模拟回答", text)
+                        if local_commands:
+                            self.assertIn("fixture-directory", text)
                     finally:
                         connection.close()
 
@@ -79,6 +133,9 @@ class WorkerIntegrationTests(unittest.TestCase):
                 for child in children:
                     if Path(f"/proc/{child}").exists():
                         os.kill(int(child), signal.SIGKILL)
+
+    def test_local_commands_across_workers(self):
+        self.run_case(False, local_commands=True)
 
     def test_ready_and_shutdown(self):
         self.run_case(False)

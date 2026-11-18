@@ -89,8 +89,8 @@ class UpstreamTests(unittest.TestCase):
                     self.fail("C 服务启动超时")
                 with connection, connection.makefile("rb") as stream:
                     body = b'{"query":"test"}'
-                    connection.sendall(struct.pack(">IHHIQ", 0x52414754, 1, 1, len(body), 1) + body)
-                    connection.sendall(struct.pack(">IHHIQ", 0x52414754, 1, 200, 2, 2) + b"{}")
+                    connection.sendall(struct.pack(">IHHIQ", 0x52414754, 2, 1, len(body), 1) + body)
+                    connection.sendall(struct.pack(">IHHIQ", 0x52414754, 2, 200, 2, 2) + b"{}")
                     responses = {}
                     for _ in range(2):
                         _, _, kind, size, request_id = struct.unpack(">IHHIQ", stream.read(20))

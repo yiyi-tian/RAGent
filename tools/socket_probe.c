@@ -205,7 +205,7 @@ static int prepare(Peer *peer, unsigned kind, uint64_t identity, const char *bod
     peer->done = false;
     peer->kind = kind;
     peer->identity = identity;
-    memcpy(peer->request, "RAGT\0\1", 6);
+    memcpy(peer->request, "RAGT\0\2", 6);
     peer->request[6] = (unsigned char)(kind >> 8);
     peer->request[7] = (unsigned char)kind;
     uint32_t size = htonl((uint32_t)length);
@@ -305,7 +305,7 @@ static int advance(Peer *peer, short events)
             }
             peer->received += (size_t)count;
         }
-        if (memcmp(peer->header, "RAGT\0\1", 6) != 0 ||
+        if (memcmp(peer->header, "RAGT\0\2", 6) != 0 ||
             number(peer->header + 6, 2) != 201 || number(peer->header + 8, 4) != 2 ||
             number(peer->header + 12, 8) != peer->identity ||
             memcmp(peer->header + 20, "{}", 2) != 0) {
@@ -326,7 +326,7 @@ static int advance(Peer *peer, short events)
         }
         peer->received += (size_t)count;
         if (header && peer->received == 20) {
-            if (memcmp(peer->header, "RAGT\0\1", 6) != 0 ||
+            if (memcmp(peer->header, "RAGT\0\2", 6) != 0 ||
                 number(peer->header + 12, 8) != peer->identity ||
                 (number(peer->header + 6, 2) != 101U &&
                  (!business_mode || number(peer->header + 6, 2) != 100U))) {

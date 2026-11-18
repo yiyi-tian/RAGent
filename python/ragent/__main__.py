@@ -2,11 +2,13 @@
 
 import argparse
 import asyncio
+from contextlib import AsyncExitStack
 import logging
 import json
 from functools import partial
 import math
 import os
+import re
 
 from aiohttp import web
 import uvloop
@@ -15,9 +17,18 @@ from .agent import RetrievalError, answer
 from .errors import ModelError
 from .model import DeepSeekModel
 from .retrieval import create_retriever
+from .tools.commands import CommandError
+from .tools.workspace import SandboxExecutor, SessionContext
 
 
-def create_app(retriever=None, model=None, timeout=10):
+def create_app(
+    retriever=None,
+    model=None,
+    timeout=10,
+    executor=None,
+    sandbox_maintenance=True,
+    client_commands=False,
+):
     async def handle(request):
         try:
             data = await request.json()
@@ -29,6 +40,11 @@ def create_app(retriever=None, model=None, timeout=10):
             return web.json_response(
                 {"code": "INVALID_REQUEST", "message": "请求字段非法"}, status=400
             )
+        if client_commands and data.get("mode") in ("cmd", "agent"):
+            return web.json_response(
+                {"code": "INVALID_REQUEST", "message": "命令模式须使用/tasks提案与本地授权接口"},
+                status=400,
+            )
         remaining_ms = data.get("timeout_ms")
         if remaining_ms is not None and (
             type(remaining_ms) is not int or not 1 <= remaining_ms <= 600000
@@ -36,6 +52,23 @@ def create_app(retriever=None, model=None, timeout=10):
             return web.json_response(
                 {"code": "INVALID_REQUEST", "message": "timeout_ms 必须为 1 至 600000 的整数"},
                 status=400,
+            )
+        session = None
+        context = data.get("session")
+        if context is not None:
+            if (
+                not isinstance(context, dict)
+                or set(context) != {"server_id", "connection_id"}
+                or not isinstance(context.get("server_id"), str)
+                or re.fullmatch(r"[a-f0-9]{32}", context["server_id"]) is None
+                or not isinstance(context.get("connection_id"), str)
+                or re.fullmatch(r"[1-9][0-9]{0,19}", context["connection_id"]) is None
+            ):
+                return web.json_response(
+                    {"code": "INVALID_REQUEST", "message": "连接上下文非法"}, status=400
+                )
+            session = SessionContext(
+                context["server_id"], context["connection_id"], data["request_id"]
             )
         request_timeout = timeout if remaining_ms is None else min(timeout, remaining_ms / 1000)
         try:
@@ -45,6 +78,8 @@ def create_app(retriever=None, model=None, timeout=10):
                 retriever=retriever,
                 model=model,
                 timeout=request_timeout,
+                executor=executor,
+                session=session,
             )
         except (ValueError, KeyError, TypeError):
             return web.json_response(
@@ -74,12 +109,26 @@ def create_app(retriever=None, model=None, timeout=10):
         return web.json_response({"alive": True})
 
     async def ready(request):
+        commands = "client" if client_commands else "mock"
+        if isinstance(executor, SandboxExecutor):
+            commands = "sandbox"
+        elif executor is not None:
+            commands = "local"
         status = {
             "ready": True,
             "model": "mock" if model is None else "configured",
             "cloud_checked": False,
             "retrieval": "mock" if retriever is None else "qdrant",
+            "commands": commands,
         }
+        if executor is not None:
+            try:
+                executor.check_ready()
+                if isinstance(executor, SandboxExecutor):
+                    await asyncio.wait_for(executor.probe(), 3)
+            except (ValueError, CommandError, TimeoutError):
+                status["ready"] = False
+                status["commands"] = "unavailable"
         if retriever is not None:
             check = getattr(retriever, "check_ready", None)
             if check is None:
@@ -94,10 +143,48 @@ def create_app(retriever=None, model=None, timeout=10):
                     status["retrieval"] = "unavailable"
         return web.json_response(status, status=200 if status["ready"] else 503)
 
+    async def sync_sessions(request):
+        if not isinstance(executor, SandboxExecutor):
+            return web.json_response({"ok": False}, status=503)
+        try:
+            snapshot = await request.json()
+            if not isinstance(snapshot, dict):
+                raise ValueError("快照必须为对象")
+            await executor.sync(snapshot)
+        except ValueError:
+            return web.json_response({"ok": False}, status=400)
+        except CommandError as error:
+            logging.getLogger(__name__).warning("工作区维护失败 code=%s", error.code)
+            return web.json_response({"ok": False, "code": error.code}, status=503)
+        return web.json_response({"ok": True})
+
+    async def maintain_sandboxes(app):
+        sandbox_executor = executor
+        assert isinstance(sandbox_executor, SandboxExecutor)
+
+        async def maintain():
+            while True:
+                await asyncio.sleep(2)
+                try:
+                    await sandbox_executor.probe()
+                except CommandError as error:
+                    logging.getLogger(__name__).warning("沙箱对账失败 code=%s", error.code)
+
+        task = asyncio.create_task(maintain())
+        yield
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
     app = web.Application(client_max_size=1024 * 1024)
     app.router.add_get("/health", health)
     app.router.add_get("/ready", ready)
     app.router.add_post("/agent", handle)
+    from .tasks import install_task_route
+
+    install_task_route(app, model, retriever, timeout)
+    app.router.add_post("/internal/sessions/sync", sync_sessions)
+    if isinstance(executor, SandboxExecutor) and sandbox_maintenance:
+        app.cleanup_ctx.append(maintain_sandboxes)
     return app
 
 
@@ -122,11 +209,13 @@ def main():
             "model": args.model,
             "retrieval": args.retrieval,
             "timeout": args.request_timeout,
+            "commands": "client",
             "model_concurrency": int(os.environ.get("RAGENT_MODEL_CONCURRENCY", "32")),
             "retrieval_workers": int(os.environ.get("RAGENT_RETRIEVAL_WORKERS", "8")),
         }
         supervise(args.host, args.port, options)
         return
+    executor = None
     retriever = create_retriever() if args.retrieval == "qdrant" else None
     try:
         model = DeepSeekModel() if args.model == "deepseek" else None
@@ -134,15 +223,13 @@ def main():
         if retriever is not None:
             uvloop.run(retriever.close())
         raise
-    app = create_app(retriever, model, args.request_timeout)
+    app = create_app(retriever, model, args.request_timeout, executor, client_commands=True)
 
     async def close_resources(app):
-        try:
-            if model is not None:
-                await model.close()
-        finally:
-            if retriever is not None:
-                await retriever.close()
+        async with AsyncExitStack() as resources:
+            for resource in (retriever, model, executor):
+                if resource is not None:
+                    resources.push_async_callback(resource.close)
 
     app.on_cleanup.append(close_resources)
     web.run_app(

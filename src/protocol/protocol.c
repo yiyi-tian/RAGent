@@ -1,8 +1,10 @@
 #include "protocol/protocol.h"
-
+#include "protocol/tool_validate.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#include "protocol/cmd_exec.h"
+#include "server/agent_http.h"
 
 static uint64_t read_integer(const unsigned char *bytes, size_t offset, unsigned width)
 {
@@ -70,7 +72,7 @@ int frame_decoder_next(FrameDecoder *decoder, Frame *frame, const char **error_m
         *error_message = "magic错误";
         return -1;
     }
-    if (read_integer(decoder->data, 4, 2) != 1) {
+    if (read_integer(decoder->data, 4, 2) != RAGENT_PROTOCOL_VERSION) {
         *error_message = "version不支持";
         return -1;
     }
@@ -111,7 +113,7 @@ int frame_encode(const Frame *frame, unsigned char **encoded, size_t *encoded_le
         return -1;
     }
     write_integer(bytes, 0, RAGENT_MAGIC, 4);
-    write_integer(bytes, 4, 1, 2);
+    write_integer(bytes, 4, RAGENT_PROTOCOL_VERSION, 2);
     write_integer(bytes, 6, (uint16_t)frame->type, 2);
     write_integer(bytes, 8, frame->body_length, 4);
     write_integer(bytes, 12, frame->request_id, 8);
@@ -236,7 +238,51 @@ int handle_fixed_request(const Frame *request, Frame *response)
         return frame_make_error(
             request->request_id, "INVALID_REQUEST", "query必须是非空白字符串", response);
     }
+     
+        // ---- 开始插入的工具调用模拟逻辑 ----
+    if (request->type == MESSAGE_CMD_REQUEST) {
+    
+        json_object *mock_result = json_object_new_object();
+        json_object *args = json_object_new_object();
+        json_object_object_add(args, "cmd", json_object_new_string(query_text));
+        
+        json_object *args_array = json_object_new_array();
+        json_object_array_add(args_array, json_object_new_string("-l"));
+        json_object_object_add(args, "args", args_array);
 
+        ToolCall tc;
+        int status = validate_tool_call(TOOL_EXECUTE_COMMAND, args, &tc);
+        
+                if (status == 0) {
+            // 1. 执行真实命令
+            char *exec_args[] = { (char*)tc.cmd, "-l", NULL };  
+            char exec_output[2048] = {0}; 
+            execute_command_safely(tc.cmd, exec_args, exec_output, sizeof(exec_output));
+
+            // 2. 直接把真实执行结果返回，彻底摆脱大模型的"None"陷阱
+            json_object_object_add(mock_result, "tool_name", json_object_new_string(TOOL_EXECUTE_COMMAND));
+            json_object_object_add(mock_result, "status", json_object_new_string("success"));
+            json_object_object_add(mock_result, "text", json_object_new_string(exec_output)); 
+            json_object_object_add(mock_result, "sources", json_object_new_array());
+
+            const char *encoded = json_object_to_json_string_ext(mock_result, JSON_C_TO_STRING_PLAIN);
+            int final_status = frame_set_body(response, MESSAGE_RESPONSE, request->request_id, encoded, strlen(encoded));
+
+            json_object_put(mock_result);
+            json_object_put(args);
+            json_object_put(body);
+            return final_status;
+        } else {
+            // 校验失败：直接返回错误并拦截
+            json_object_put(mock_result);
+            json_object_put(args);
+            json_object_put(body);
+            return frame_make_error(request->request_id, "SECURITY_ERROR", tc.error_msg, response);
+        }
+    } 
+    // ---- 结束插入的工具调用模拟逻辑 ----
+
+    // 下面是给其他模式（CHAT、RAG）用的老代码
     json_object *result = json_object_new_object();
     json_object *text = json_object_new_string_len("server received: ", 17);
     if (result == NULL || text == NULL) {

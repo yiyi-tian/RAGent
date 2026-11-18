@@ -31,7 +31,7 @@ ragent-evaluate = "tools.evaluate_rag:main"
 ragent-evaluate-evidence = "tools.evaluate_evidence:main"
 
 [tool.setuptools]
-packages = ["ragent", "rag", "tools"]
+packages = ["ragent", "ragent.tools", "rag", "tools"]
 package-dir = { ragent = "python/ragent", rag = "rag", tools = "tools" }
 
 [tool.black]

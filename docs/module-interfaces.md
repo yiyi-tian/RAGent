@@ -1,6 +1,6 @@
 # RAGent 模块接口
 
-本文描述当前网络、Agent、模型与检索接口。真实命令执行器与沙箱的接口尚待确定。
+本文描述当前网络、Agent、模型与检索接口。命令策略与执行由客户端C组件承担，工作区为客户端启动目录。
 TCP 帧格式以[协议规范](protocol.md)为准。
 
 ## C 网络与资源所有权
@@ -34,7 +34,7 @@ HTTP服务使用uvloop事件循环；单进程与固定多进程入口采用相�
 {"request_id":"1","mode":"rag","query":"如何列出隐藏文件？"}
 ```
 
-request_id 使用字符串避免 64 位整数精度问题；mode 为 chat、rag、cmd 或 agent。
+request_id 使用字符串避免 64 位整数精度问题；该入口mode为chat或rag；CMD/AGENT使用下文的/tasks。
 成功返回 `text` 字符串、`sources` 数组和 `actions` 数组。来源形状见 TCP 协议；
 actions 每项包含 `tool`、`status`、`summary`，status 为 success 或 failed。
 失败返回 `code`、`message`，C 负责映射为 TCP ERROR 并保留原 request_id。
@@ -63,8 +63,8 @@ RAG 和已调用检索的 AGENT 会加入只依据证据作答的
 |---|---|
 | CHAT | 无工具 |
 | RAG | 编排层强制检索后提供证据，不插入伪造的模型工具调用 |
-| CMD | 仅模拟 diagnose，target 为 memory |
-| AGENT | search_linux_manual 与模拟 diagnose |
+| CMD | run_command命令提案 |
+| AGENT | search_linux_manual 与run_command |
 
 每请求最多 4 次模型调用，每轮最多 4 个工具。服务总时限默认 120 秒，可通过
 `--request-timeout` 设置；无成功结果时总超时返回错误，有成功工具结果时返回未完成摘要。
@@ -101,7 +101,7 @@ vector 策略不加载该索引，直接执行单路向量检索。
 模型和检索方式由 Python 启动参数选择。真实入口客户端需使用 `--timeout-ms 130000`。
 模型单次超时与 Token 上限由环境提供。不带配置文件启动 C 服务时使用固定响应。
 
-真实命令执行器尚未实现；其权限、结构化输入、超时、输出限制和子进程回收需在实现前确定。
+命令边界见[命令执行](command-policy.md)，不提升宿主机权限。
 自动写操作必须限制在隔离工作区，隔离不可用时禁用，不向 Agent 暴露 Docker 管理套接字。
 
 排队过期任务在工作线程取出时返回 UPSTREAM_TIMEOUT，不再发起后端调用。
@@ -110,6 +110,24 @@ C HTTP 使用剩余时限，Python 模型信号量等待与工具循环均计入
 HTTP 调用方断开会取消 Python 请求。已提交云端的调用可能仍产生用量，取消不保证
 撤销远端执行；写工具需单独落实取消与回收语义。
 
-CLI在线服务持有的模型客户端与检索线程池在应用退出时关闭；模型初始化失败时回收已创建的检索器。
+CLI在线服务持有的模型客户端、检索线程池与执行器在应用退出时关闭；模型初始化失败时回收已创建的检索器。
 通过 `create_app` 注入的共享资源由调用者管理，应用不自动关闭。模型异步客户端关闭失败时，
 仍释放同步客户端并保留原异常。
+
+## 可暂停的命令任务
+
+`POST /tasks`承载CMD和AGENT。初次请求包含query、mode和workspace；恢复请求包含
+C网络线程保存的task_state与按原tool_call ID排序的results。Python工作进程不持有待确认会话。
+模型调用保持实际AIMessage和ToolMessage，最多4轮、每轮4工具，按序执行命令。
+
+Python返回 `kind=command_proposal`、commands和私有state。C网络线程保存state，
+删除其公开副本，生成一次性continuation。客户端只收到命令，不收到模型历史。
+结果继续使用原request_id；跨连接、重复及错误continuation均拒绝。
+等待确认最多15分钟，不持有C业务线程或HTTP连接；同连接只允许一个命令任务。
+最多64个保留状态的续行任务，每个私有状态512 KiB；计算和排队累计预算120秒，确认等待另计。
+
+本地C接口 `command_policy`解析完整命令；`local_command`固定工作区描述符、读取本地TTY授权，
+再调用只读观察器或容器管理器。观察器接收fd3，容器挂载后核对工作区设备号与inode。
+命令结果包含status、effect、exit_code及cleanup_failed；effect=unknown时停止后续命令，
+不得声称回滚。凭证授权不进入TCP，使用凭证时text仅包含输出已隔离的说明。
+TCP消息与续行流程见[协议](protocol.md)。
