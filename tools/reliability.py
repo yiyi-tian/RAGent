@@ -193,6 +193,7 @@ async def c_server(directory, endpoint, workers=64):
                 stderr=log,
                 env=dict(os.environ, RAGENT_METRICS="1"),
             )
+            assert process.stdout is not None
             line = await asyncio.wait_for(process.stdout.readline(), 30)
             if not line.startswith(b"Listening on "):
                 raise RuntimeError("C服务未就绪")
@@ -235,10 +236,10 @@ async def exchange(port, identity, query, mode):
         async with asyncio.timeout(130):
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             body = json.dumps({"query": query}).encode()
-            writer.write(HEADER.pack(0x52414754, 1, mode, len(body), identity) + body)
+            writer.write(HEADER.pack(0x52414754, 2, mode, len(body), identity) + body)
             await writer.drain()
             header = HEADER.unpack(await reader.readexactly(20))
-            if header[:2] != (0x52414754, 1) or header[4] != identity or header[3] > 1048576:
+            if header[:2] != (0x52414754, 2) or header[4] != identity or header[3] > 1048576:
                 raise ValueError("响应帧头非法")
             response = json.loads(await reader.readexactly(header[3]))
             if header[2] == 101:
@@ -324,10 +325,16 @@ async def faults(directory, embedding, store, container):
 
 async def model_faults(directory):
     from langchain_openai import ChatOpenAI
+    from pydantic import SecretStr
+    from typing import TypedDict
     from unittest.mock import patch
     from ragent.model import DeepSeekModel
 
-    state = {"status": 200, "calls": 0}
+    class ModelState(TypedDict):
+        status: int | str
+        calls: int
+
+    state: ModelState = {"status": 200, "calls": 0}
 
     async def handler(request):
         await request.json()
@@ -384,7 +391,7 @@ async def model_faults(directory):
     await model.close()
     model.client = ChatOpenAI(
         model="controlled",
-        api_key="controlled",
+        api_key=SecretStr("controlled"),
         base_url=f"http://127.0.0.1:{api_port}/",
         timeout=0.15,
         max_retries=0,
@@ -651,11 +658,13 @@ async def soak(args, directory, embedding, store):
                 str(mode): percentile(list(values), 0.95) for mode, values in latencies.items()
             }
             report["final"] = samples[-1]
+            rag_p95 = report["p95_s"]["2"]
+            agent_p95 = report["p95_s"]["4"]
             checks = {
                 "all_success": counts["OK"] == total and sum(counts.values()) == total,
                 "drained": len(tasks) == 0,
-                "rag_latency": report["p95_s"]["2"] <= 15,
-                "agent_latency": report["p95_s"]["4"] <= 25,
+                "rag_latency": rag_p95 is not None and rag_p95 <= 15,
+                "agent_latency": agent_p95 is not None and agent_p95 <= 25,
             }
             baseline = [sample for sample in samples if 600 <= sample["seconds"] < 900]
             end = [sample for sample in samples if 3000 <= sample["seconds"] < 3300]

@@ -77,7 +77,7 @@ if [[ $deploy == true ]]; then
     fi
 else
     for executable in .venv/bin/python .venv/bin/ragent-server \
-        ./build/agent-server ./build/agent; do
+        ./build/agent-server ./build/agent ./build/ragent-observe; do
         if [[ ! -x $executable ]]; then
             echo "缺少 $executable，请先运行 bash scripts/start.sh --deploy。" >&2
             exit 1
@@ -98,8 +98,8 @@ from urllib.parse import urlsplit
 with open('config/agent.json') as file:
     config = json.load(file)
 url = urlsplit(config['agent_url'])
-if url.scheme != 'http' or url.hostname != '127.0.0.1' or url.path != '/agent':
-    raise SystemExit('配置中的 Agent 必须为本机 http://127.0.0.1:端口/agent')
+if url.scheme != 'http' or url.hostname != '127.0.0.1' or url.path != '/tasks':
+    raise SystemExit('配置中的 Agent 必须为本机 http://127.0.0.1:端口/tasks')
 if config['host'] not in ('127.0.0.1', '0.0.0.0'):
     raise SystemExit('本机脚本要求 C 服务监听 127.0.0.1 或 0.0.0.0')
 print(config['port'], url.port or 80)

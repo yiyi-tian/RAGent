@@ -31,7 +31,7 @@ def dump(value):
 def frame(kind=1, request_id=1, body=None):
     if body is None:
         body = dump({"query": "hello"})
-    return HEADER.pack(MAGIC, 1, kind, len(body), request_id) + body
+    return HEADER.pack(MAGIC, 2, kind, len(body), request_id) + body
 
 
 def receive_exact(connection, length):
@@ -46,7 +46,7 @@ def receive_exact(connection, length):
 
 def receive(connection):
     magic, version, kind, length, request_id = HEADER.unpack(receive_exact(connection, 20))
-    assert magic == MAGIC and version == 1 and length <= LIMIT
+    assert magic == MAGIC and version == 2 and length <= LIMIT
     return kind, request_id, json.loads(receive_exact(connection, length))
 
 
@@ -59,10 +59,13 @@ class RunningServer:
             stderr=self.log,
             text=True,
         )
-        if not select.select([self.process.stdout], [], [], 10)[0]:
+        stdout = self.process.stdout
+        assert stdout is not None
+        self.stdout = stdout
+        if not select.select([self.stdout], [], [], 10)[0]:
             self.close()
             raise AssertionError("服务器启动超时")
-        line = self.process.stdout.readline().strip()
+        line = self.stdout.readline().strip()
         if not line.startswith("Listening on 127.0.0.1:"):
             self.close()
             raise AssertionError(f"服务器启动失败: {line}")
@@ -82,7 +85,7 @@ class RunningServer:
                 self.process.kill()
                 self.process.wait()
                 raise AssertionError("服务器未正常停止")
-        self.process.stdout.close()
+        self.stdout.close()
         self.log.seek(0)
         log_output = self.log.read(8192)
         self.log.close()
@@ -117,6 +120,7 @@ os.execv(sys.argv[1], sys.argv[1:])
             text=True,
         )
         try:
+            assert process.stdout is not None
             self.assertTrue(select.select([process.stdout], [], [], 10)[0])
             self.assertTrue(process.stdout.readline().startswith("Listening on"))
             soft, _ = resource.prlimit(process.pid, resource.RLIMIT_NOFILE)
@@ -128,7 +132,7 @@ os.execv(sys.argv[1], sys.argv[1:])
 
     def client(self, *arguments, input=None, timeout=10):
         return subprocess.run(
-            [CLIENT, "--port", str(self.server.port), *arguments],
+            [CLIENT, "--remote-only", "--port", str(self.server.port), *arguments],
             input=input,
             text=True,
             capture_output=True,
@@ -142,7 +146,7 @@ os.execv(sys.argv[1], sys.argv[1:])
             pass
 
     def test_wire_example_and_64_bit_id(self):
-        expected = bytes.fromhex("5241475400010001000000110000000000000001")
+        expected = bytes.fromhex("5241475400020001000000110000000000000001")
         self.assertEqual(frame()[:20], expected)
         with self.server.connect() as connection:
             request_id = 0x12345678ABCDEF01
@@ -217,7 +221,7 @@ os.execv(sys.argv[1], sys.argv[1:])
                 self.assertEqual(receive(connection)[2]["code"], "UNSUPPORTED_MESSAGE_TYPE")
 
     def test_invalid_headers_close_immediately(self):
-        headers = [(0, 1, 1, 0, 1), (MAGIC, 2, 1, 0, 1), (MAGIC, 1, 1, LIMIT + 1, 1)]
+        headers = [(0, 2, 1, 0, 1), (MAGIC, 1, 1, 0, 1), (MAGIC, 2, 1, LIMIT + 1, 1)]
         for header in headers:
             with self.subTest(header=header), self.server.connect() as connection:
                 connection.sendall(HEADER.pack(*header))
@@ -308,7 +312,8 @@ os.execv(sys.argv[1], sys.argv[1:])
         self.assertIn("  ____      _    ____", result.stdout)
         self.assertNotIn("第一阶段", result.stdout)
         self.assertIn("检索 Linux 手册后回答", result.stdout)
-        self.assertIn("模拟内存诊断，不读取宿主机指标", result.stdout)
+        self.assertIn("工作区为本客户端启动目录", result.stdout)
+        self.assertIn("拒绝即结束整个任务", result.stdout)
         self.assertIn("默认使用 Agent 模式", result.stdout)
         self.assertIn("agent>", result.stdout)
         self.assertIn("chat>", result.stdout)
@@ -412,13 +417,14 @@ os.execv(sys.argv[1], sys.argv[1:])
 
     def test_client_interrupt_while_waiting_for_input(self):
         process = subprocess.Popen(
-            [CLIENT, "--port", str(self.server.port)],
+            [CLIENT, "--remote-only", "--port", str(self.server.port)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
         )
         try:
+            assert process.stdout is not None
             self.assertTrue(select.select([process.stdout], [], [], 5)[0])
             process.send_signal(signal.SIGINT)
             process.communicate(timeout=5)
@@ -437,6 +443,7 @@ class ClientPeerTests(unittest.TestCase):
             process = subprocess.Popen(
                 [
                     CLIENT,
+                    "--remote-only",
                     "--port",
                     str(listener.getsockname()[1]),
                     "--timeout-ms",
@@ -488,7 +495,7 @@ class ClientPeerTests(unittest.TestCase):
             listener.bind(("127.0.0.1", 0))
             listener.listen(1)
             process = subprocess.Popen(
-                [CLIENT, "--port", str(listener.getsockname()[1])],
+                [CLIENT, "--remote-only", "--port", str(listener.getsockname()[1])],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -496,6 +503,7 @@ class ClientPeerTests(unittest.TestCase):
             )
             try:
                 listener.settimeout(5)
+                assert process.stdin is not None
                 with listener.accept()[0] as connection:
                     process.stdin.write("直接提问\n")
                     process.stdin.flush()
@@ -522,6 +530,7 @@ class ClientPeerTests(unittest.TestCase):
                 process = subprocess.Popen(
                     [
                         CLIENT,
+                        "--remote-only",
                         "--port",
                         str(listener.getsockname()[1]),
                         "--timeout-ms",

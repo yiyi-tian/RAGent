@@ -31,7 +31,7 @@ ragent-evaluate = "tools.evaluate_rag:main"
 ragent-evaluate-evidence = "tools.evaluate_evidence:main"
 
 [tool.setuptools]
-packages = ["ragent", "rag", "tools"]
+packages = ["ragent", "ragent.tools", "rag", "tools"]
 package-dir = { ragent = "python/ragent", rag = "rag", tools = "tools" }
 
 [tool.black]
@@ -39,7 +39,7 @@ line-length = 100
 target-version = ["py311"]
 
 [tool.pyright]
-include = ["python/ragent"]
+include = ["python/ragent", "rag", "tools", "tests"]
 extraPaths = ["python", "."]
 pythonVersion = "3.11"
 typeCheckingMode = "basic"

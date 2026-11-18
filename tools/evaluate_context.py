@@ -63,7 +63,10 @@ async def compare_answers(cases, results, directory, budget, identities=ANSWER_C
 
     pipeline = {}
     for module in (ragent.agent, ragent.model, ragent.retrieval):
-        pipeline[module.__name__] = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+        filename = module.__file__
+        if filename is None:
+            raise ValueError(f"模块缺少源码路径，无法核验回答缓存：{module.__name__}")
+        pipeline[module.__name__] = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
     pipeline_path = directory / "answer-pipeline.json"
     if pipeline_path.exists():
         if json.loads(pipeline_path.read_text()) != pipeline:
@@ -196,6 +199,9 @@ def run(args):
     candidate.ensure_collection(len(vectors[0]))
     started = time.perf_counter()
     candidate.prepare_search()
+    index = candidate.search_index
+    if index is None:
+        raise ValueError("上下文评测需要已加载的检索索引")
     index_seconds = time.perf_counter() - started
     unit_variant = "entries" if args.entries and not args.multigrain else "paragraph"
     results = {"baseline": {}, unit_variant: {}, "context": {}}
@@ -207,9 +213,9 @@ def run(args):
         fine = candidate.search(vector, 20, "entry-v3") if args.multigrain else []
         started = time.perf_counter()
         if args.multigrain:
-            expanded = candidate.search_index.select_multigrain(dense, fine)
+            expanded = index.select_multigrain(dense, fine)
         else:
-            expanded = candidate.search_index.select(dense)
+            expanded = index.select(dense)
         local_seconds.append(time.perf_counter() - started)
         matches_by_variant = {
             "baseline": baseline.search(vector, 5),
@@ -217,7 +223,7 @@ def run(args):
             "context": expanded,
         }
         if args.multigrain:
-            matches_by_variant["previous_context"] = candidate.search_index.select(dense)
+            matches_by_variant["previous_context"] = index.select(dense)
         for variant, matches in matches_by_variant.items():
             results[variant][case["id"]] = {
                 "rank": evidence_rank(case, matches),

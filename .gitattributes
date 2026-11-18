@@ -1,0 +1,2 @@
+# 上游固定依赖保留原始排版，不应用项目的空白检查。
+third_party/** -whitespace linguist-vendored=true

@@ -226,7 +226,8 @@ class BenchmarkTests(unittest.IsolatedAsyncioTestCase):
             },
         ):
             model = DeepSeekModel(2, observe=lambda *event: events.append(event))
-        model.client = Client()
+        await model.close()
+        self.enterContext(patch.object(model, "client", Client()))
         await asyncio.gather(*(model.ainvoke([HumanMessage(content="测试")], []) for _ in range(6)))
         self.assertEqual(maximum, 2)
         self.assertEqual(sum(event[0] == "model" for event in events), 6)
@@ -253,7 +254,7 @@ class SocketProbeTests(unittest.IsolatedAsyncioTestCase):
                     try:
                         header = HEADER.unpack(await reader.readexactly(20))
                         await reader.readexactly(header[3])
-                        response = HEADER.pack(0x52414754, 1, 201, len(payload), response_id)
+                        response = HEADER.pack(0x52414754, 2, 201, len(payload), response_id)
                         writer.write(response[:7])
                         await writer.drain()
                         await asyncio.sleep(0.01)

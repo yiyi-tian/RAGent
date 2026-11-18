@@ -39,12 +39,12 @@ async def probe(settings):
                     reader, writer = await asyncio.open_connection("127.0.0.1", port)
                 connected = time.monotonic()
                 body = json.dumps({"query": settings["query"]}).encode()
-                writer.write(HEADER.pack(0x52414754, 1, 2, len(body), identity) + body)
+                writer.write(HEADER.pack(0x52414754, 2, 2, len(body), identity) + body)
                 await writer.drain()
                 sent = time.monotonic()
                 header = HEADER.unpack(await reader.readexactly(20))
                 if (
-                    header[:3] != (0x52414754, 1, 101)
+                    header[:3] != (0x52414754, 2, 101)
                     or header[3] > 1048576
                     or header[4] != identity
                 ):
@@ -83,11 +83,11 @@ async def probe(settings):
         started = time.monotonic()
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         try:
-            writer.write(HEADER.pack(0x52414754, 1, 200, 2, 999999) + b"{}")
+            writer.write(HEADER.pack(0x52414754, 2, 200, 2, 999999) + b"{}")
             await writer.drain()
             raw = await asyncio.wait_for(reader.readexactly(20), 3)
             header = HEADER.unpack(raw)
-            if header != (0x52414754, 1, 201, 2, 999999):
+            if header != (0x52414754, 2, 201, 2, 999999):
                 raise ValueError("PING响应头错误")
             if await reader.readexactly(2) != b"{}":
                 raise ValueError("PONG载荷错误")

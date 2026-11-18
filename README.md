@@ -2,7 +2,7 @@
 
 RAGent 是面向 Linux 系统编程课程的多客户端 Agent。C17 客户端通过自定义 TCP
 协议接入 C 网络服务，工作线程通过 HTTP/JSON 调用 Python LangChain Agent。
-Agent 支持 DeepSeek 问答、Linux 手册检索和工具调用；诊断工具目前为模拟实现。
+Agent 支持 DeepSeek 问答、Linux 手册检索和客户端分级命令执行；写操作须确认后在rootless容器中执行。
 
 ## 一键本机部署
 
@@ -44,7 +44,7 @@ Ubuntu 24.04 需要 C17 编译器、CMake 3.16 以上、pkg-config、json-c、li
 Python 3.11 以上。Python 依赖与开发工具配置见 `pyproject.toml`。
 
 ```bash
-sudo apt install build-essential cmake pkg-config libjson-c-dev libcurl4-openssl-dev python3-venv
+sudo apt install build-essential cmake pkg-config libjson-c-dev libcurl4-openssl-dev python3-venv procps
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
@@ -101,8 +101,8 @@ agent> /exit
 |---|---|
 | CHAT | 直接调用模型，不提供工具 |
 | RAG | 强制先检索 Linux 手册，再交给模型回答并回传来源 |
-| CMD | 提供模拟内存诊断，由模型解释；不读取宿主机指标 |
-| AGENT | 模型自主选择检索或模拟诊断，可迭代调用工具 |
+| CMD | 模型提出Shell命令，客户端按风险分级确认与执行 |
+| AGENT | 模型自主组合检索、诊断及已启用的文件工具 |
 
 C 请求预算由 agent_timeout_ms 配置，默认 125 秒，从完整请求入队开始，包含排队及
 HTTP 调用。过期任务不再执行；Python 接收剩余预算并与自身默认 120 秒取较小值。
@@ -128,6 +128,14 @@ Python 可通过 `--workers 1..4` 或 `RAGENT_AGENT_WORKERS` 设置固定工作�
 索引。增加进程的性能收益需按实际机器和上游服务测量，容量验收见
 [高并发配置与测量](docs/performance-concurrency.md)。
 
+## CMD 工具
+
+命令作用于客户端启动目录。只读命令自动执行；写入与向外行动须逐条确认，
+在rootless容器内执行，写入反映到真实工作区，断连后保留。
+首次在客户端设备执行 `bash scripts/setup-command-runtime.sh`，然后在任意任务目录
+运行 `~/.local/bin/ragent`。网络、凭证、SSH和隔离限制见[命令执行说明](docs/command-policy.md)。
+服务端与客户端须同时升级，TCP v2拒绝旧版本。
+
 ## 可选：单次请求
 
 只发送一个问题并退出时，使用 `--query`，可通过 `--mode` 指定模式。
@@ -147,7 +155,11 @@ flowchart LR
     A --> R[Linux 手册检索]
     R --> E[百炼 Embedding]
     R --> Q[(Qdrant)]
-    A --> T[模拟诊断工具]
+    N -->|命令提案| C
+    C --> T[C策略与用户确认]
+    T --> H[宿主机受限只读程序]
+    T --> D[rootless Docker]
+    D --> F[真实工作区挂载]
     P[Python 离线入库] --> Q
 ```
 
@@ -159,25 +171,27 @@ TCP 使用 20 字节大端头和 UTF-8 JSON，支持半包、粘包、部分写�
 Agent 每请求独立保存消息和工具结果，最多调用模型 4 次，每轮最多 4 个工具；
 DeepSeek 模型默认并发上限为 32，可用 RAGENT_MODEL_CONCURRENCY 设置。
 检索使用独立的 8 线程池，可用 RAGENT_RETRIEVAL_WORKERS 设置。
-环境示例通过 NO_PROXY 让 DeepSeek 和百炼接口直连；需要代理访问时调整该项。模型和工具结果只在本次请求内保留，无跨请求会话和流式输出。
+环境示例通过 NO_PROXY 让 DeepSeek 和百炼接口直连；需要代理访问时调整该项。
+对话无跨请求历史和流式输出；工作区固定为客户端启动目录，文件在任务结束后保留。
 知识库包含 8 本手册、1456 个段落或条目检索单元，默认融合两种粒度；质量结果与限制见
 [多粒度验收](docs/rag-evaluation-v4.md)。
 
 ## 开发与后续工作
 
 ```bash
+.venv/bin/python -m compileall -q python rag tools tests
 .venv/bin/pyright --pythonpath .venv/bin/python
 .venv/bin/black --check python rag tools tests
 ```
 
 网络、Agent、真实检索和 DeepSeek 已打通，构建与自动化检查结果见
-[验证说明](docs/testing.md)。下一阶段实现真实只读诊断和 C 受控执行器，再推进沙箱写入、
-全链路压测和部署验收。目前没有真实命令执行或沙箱能力。断连取消、截止时间传播、
+[验证说明](docs/testing.md)。CMD使用客户端分级策略与rootless工作区执行；
+跨设备部署仍需独立验收。断连取消、截止时间传播、
 资源关闭和本地就绪检查已实现。
 默认单进程与可选四进程配置均完成三轮32在途、600请求真实模型测试。
 四进程另完成真实千在途1000/1000成功，吞吐8.822请求/秒、混合P95为106.894秒。
 本轮吞吐优化已结束，不再以9请求/秒为目标；后续uvloop与工具绑定复用仅有受控验证，
-未重新进行付费千请求压测。配置、测量口径与版本边界见
+未重新进行付费千请求压测；这些数据不包含客户端命令确认与执行。配置、测量口径与版本边界见
 [并发配置与测量](docs/performance-concurrency.md)。
 
 ## 文档与协作

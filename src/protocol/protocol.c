@@ -1,7 +1,6 @@
 #include "protocol/protocol.h"
 #include "protocol/tool_validate.h"
 #include <ctype.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "protocol/cmd_exec.h"
@@ -73,7 +72,7 @@ int frame_decoder_next(FrameDecoder *decoder, Frame *frame, const char **error_m
         *error_message = "magic错误";
         return -1;
     }
-    if (read_integer(decoder->data, 4, 2) != 1) {
+    if (read_integer(decoder->data, 4, 2) != RAGENT_PROTOCOL_VERSION) {
         *error_message = "version不支持";
         return -1;
     }
@@ -114,7 +113,7 @@ int frame_encode(const Frame *frame, unsigned char **encoded, size_t *encoded_le
         return -1;
     }
     write_integer(bytes, 0, RAGENT_MAGIC, 4);
-    write_integer(bytes, 4, 1, 2);
+    write_integer(bytes, 4, RAGENT_PROTOCOL_VERSION, 2);
     write_integer(bytes, 6, (uint16_t)frame->type, 2);
     write_integer(bytes, 8, frame->body_length, 4);
     write_integer(bytes, 12, frame->request_id, 8);
@@ -287,12 +286,15 @@ int handle_fixed_request(const Frame *request, Frame *response)
     json_object *result = json_object_new_object();
     json_object *text = json_object_new_string_len("server received: ", 17);
     if (result == NULL || text == NULL) {
-        if (result != NULL) json_object_put(result);
-        if (text != NULL) json_object_put(text);
+        if (result != NULL) {
+            json_object_put(result);
+        }
+        if (text != NULL) {
+            json_object_put(text);
+        }
         json_object_put(body);
         return -1;
     }
-    
     const size_t prefix_length = (size_t)json_object_get_string_len(text);
     char *response_text = malloc(prefix_length + query_length + 1);
     if (response_text == NULL) {
@@ -304,22 +306,24 @@ int handle_fixed_request(const Frame *request, Frame *response)
     memcpy(response_text, json_object_get_string(text), prefix_length);
     memcpy(response_text + prefix_length, query_text, query_length);
     response_text[prefix_length + query_length] = '\0';
-    
-    json_object_object_add(result, "text", json_object_new_string_len(response_text, (int)(prefix_length + query_length)));
+    json_object_object_add(
+        result,
+        "text",
+        json_object_new_string_len(response_text, (int)(prefix_length + query_length)));
     free(response_text);
     json_object_put(text);
     json_object_object_add(result, "sources", json_object_new_array());
-    
     const char *encoded = json_object_to_json_string_ext(result, JSON_C_TO_STRING_PLAIN);
     const size_t encoded_length = strlen(encoded);
-    
-    int status_final;
-    status_final = frame_make_error(request->request_id, "INTERNAL_ERROR", "编码后的响应超过消息体上限", response);
-    if (encoded_length <= RAGENT_MAX_BODY_SIZE) {
-        status_final = frame_set_body(response, MESSAGE_RESPONSE, request->request_id, encoded, encoded_length);
+    int status;
+    if (encoded_length > RAGENT_MAX_BODY_SIZE) {
+        status = frame_make_error(
+            request->request_id, "INTERNAL_ERROR", "编码后的响应超过消息体上限", response);
+    } else {
+        status = frame_set_body(
+            response, MESSAGE_RESPONSE, request->request_id, encoded, encoded_length);
     }
-    
     json_object_put(result);
     json_object_put(body);
-    return status_final;
+    return status;
 }

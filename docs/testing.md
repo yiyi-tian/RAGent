@@ -8,12 +8,17 @@
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE="$PWD/.venv/bin/python"
 cmake --build build -j 2
 ctest --test-dir build --output-on-failure
+.venv/bin/python -m compileall -q python rag tools tests
 .venv/bin/pyright --pythonpath .venv/bin/python
 .venv/bin/black --check python rag tools tests
 ```
 
+Pyright统一覆盖`python/ragent`、`rag`、`tools`和`tests`，不能只凭单个目录通过宣称全部类型检查通过。
+GitHub Actions在push及pull request时执行同范围的语法、类型、格式、Release构建与回归检查，
+使用Mock和本地受控接口，无需配置云端密钥。检查失败须修复后再交付；分支保护仍由仓库管理员配置。
+
 CTest 包含线程池背压、部署脚本、RAG、并发、网络、Agent、固定工作进程和
-独立 C 负载发生器八项。
+独立C负载发生器、命令策略、内核只读边界、网络授权及终端转义。当前共17组。
 Agent 测试依赖已安装的项目及
 Python 运行依赖；依赖不齐时 CMake 会提示未启用，不能将其当作完整验收。
 网络测试仅需 Python 标准库，服务与集成测试使用动态端口。Agent 测试串行运行，
@@ -64,7 +69,7 @@ Pyright、Black、依赖一致性检查通过。
 Python可编辑安装与wheel构建已验证，已核对包内模块与依赖声明。
 受控 HTTP 测试不调用云端服务，不代表真实模型表现或语义检索质量。
 
-当前uvloop实现已完成Release构建、八组回归、在线代码与多进程压测工具的Pyright检查。
+当前uvloop实现已完成Release构建及回归、在线代码与多进程压测工具的Pyright检查。
 wheel已重新构建并核对固定工作进程模块和uvloop依赖；项目依赖仍使用版本范围，没有锁定文件。
 新版本四进程还完成16请求TLS闭环：模型与Embedding均连接本地HTTPS兼容接口，Qdrant使用
 真实容器中的独立复制集合，24次模型、16次Embedding本地调用全部对应预期请求，没有云端
@@ -75,7 +80,7 @@ wheel已重新构建并核对固定工作进程模块和uvloop依赖；项目依
 来源与证据质量见[来源级评测](rag-evaluation-v1.md)及
 [证据块评测](rag-evidence-v1.md)。
 
-当前没有真实命令执行或沙箱隔离。真实千在途已完成1000/1000成功，但吞吐8.822请求/秒，
+客户端分级命令使用真实C策略组件及rootless容器，验证范围见下文。真实千在途已完成1000/1000成功，但吞吐8.822请求/秒，
 本轮不再追求9请求/秒；uvloop版本未重新进行真实云端千请求测试，详见
 [高并发配置与测量](performance-concurrency.md)。客户端没有跨请求
 历史与 Tab 补全。Docker 已启用开机启动，Qdrant 可用；该启动配置的再次宿主机重启
@@ -113,7 +118,7 @@ find "$report_dir" -type f -print
 
 `BUILD_TESTING=ON` 时构建独立C客户端 `build/socket-probe`，不复用服务端编解码。
 `native-probe-unit` 覆盖半包、递增ID、错误ID、非法JSON尾随数据、提前断开和多线程
-原始样本汇总。CTest共八组；千连接PING和冷连接过载各连续三轮通过，测量方法、
+原始样本汇总。CTest共九组；千连接PING和冷连接过载各连续三轮通过，测量方法、
 客户端线程数和局限见[性能验收](performance-concurrency.md)。这些网络复测没有云端用量。
 独立C客户端同时支持RAG/AGENT业务突发，区分完整成功、工具失败、证据为空及协议错误；
 受控千请求使用该客户端完成1000/1000成功、P95为97.206秒的回归。
@@ -144,3 +149,58 @@ set +a
 每秒2.5请求、最多32在途，预热10分钟、稳定45分钟、排空5分钟。
 记录逐请求结果、每秒RSS/线程/FD、最近观察到的队列深度及退出时队列状态。
 少于3600秒只算冒烟，不能通过完整稳定性验收，也不能代替真实模型千在途测试。
+
+## 分级命令与容器验证
+
+本机Ubuntu 24.04 amd64执行结果：
+
+- 干净Release构建使用 `-DCMAKE_C_FLAGS=-Werror`，17组CTest全部通过。
+- Pyright、全范围语法编译和Black检查通过，覆盖python/ragent、rag、tools、tests。
+- 只读边界实际拒绝写入、截断、创建、删除、凭证内容、硬链接、符号链接逃逸、网络、
+  其他程序执行及进程内存读取；流水线、条件链、通配符、文件计数和Git已暂存敏感文件过滤通过。
+- 9项C客户端与任务续行测试通过，包含本地TTY批准、拒绝、非交互拦截、环境/文件凭证输出隔离、
+  跨连接令牌拒绝、一次性续行、心跳及实际客户端工作目录。
+- 8项真实容器测试通过，包含写入回传与归属、敏感文件/硬链接/宿主机Socket隔离、工作区外拒绝、
+  默认无网、取消清理、显式环境注入、HTTPS精确授权及SNI拒绝、SSH授权端点握手。
+- 实际SIGKILL客户端后，回收服务删除遗留容器；此前写入保留，延迟写入没有发生。
+- 安装后的ragent在含中文、空格的仓库外目录执行只读命令通过；实际日常启动与PING通过。
+  这次启动只检查本地依赖，没有调用付费模型或Embedding。
+
+常规CTest不要求部署Docker镜像，容器与TTY批准测试默认明确跳过。部署命令运行时后单独执行：
+
+```bash
+RAGENT_TEST_SANDBOX=1 ctest --test-dir build -R command-container-integration --output-on-failure
+RAGENT_TEST_SANDBOX=1 RAGENT_SERVER="$PWD/build/agent-server" \
+  .venv/bin/python -m unittest discover -s tests/agent -p test_task_transport.py -v
+```
+
+网络测试访问example.com和ssh.github.com，网络不可用时会失败，不将其替换为假成功。
+SSH验证覆盖代理通道和SSH握手，未使用真实账户私钥验证远程认证或推送。
+自定义敏感名配置已实际验证追加规则及非法配置拒绝；未在另一台全新主机上验证整套安装脚本，也未验证其他操作系统或架构。
+
+## 真实模型闭环
+
+本轮真实DeepSeek验证通过：客户端pwd、man(1)手册检索与pwd组合、非交互写入拦截、
+在终端核对并批准 `touch approved-real-file` 后的真实写入，文件在客户端断连后仍存在。
+另有一次确认等待超时被安全取消，未执行写入。
+本轮共10次模型、2次Embedding；共享预算账本累计55/80次模型、6/40次Embedding，
+未重置或提高预算。没有重新进行吞吐或千在途压测，既有吞吐数据不能代表本地命令执行性能。
+
+ls -a组合用例曾检索到man(1)，模型说明证据不足，该用例不算检索质量通过。
+已修正验收工具：检查后端实际sources及completed状态，不把回答中提到的手册名当作命中。
+补测man -a组合用例返回了man(1)及对应选项证据，终态completed；原始报告和复核记录均保留。
+这证明组合调用可用，不能据此宣称所有检索问题都能命中。
+
+自动付费工具只验证固定只读/检索与非交互拦截，不自动批准写入：
+
+```bash
+set -a
+source .env
+set +a
+.venv/bin/python -m tools.validate_cmd --phase formal \
+  --output artifacts/cmd-policy-implementation/real-model.json
+```
+
+调用前持久化计数，失败和预留也计入；precheck/formal/fix模型额度分别16/48/16。
+报告、安装记录、构建与容器日志保存在忽略的 `artifacts/cmd-policy-implementation/`，
+预算保存在 `artifacts/cmd-validation/budget.json`，不提交运行资料或凭证。

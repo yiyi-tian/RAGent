@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "protocol/cmd_exec.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +10,7 @@
 #include <signal.h>
 #include <time.h>
 #include <errno.h>
+#include <signal.h>
 
 // 执行系统命令，并捕获输出（带超时强杀和输出截断）
 int execute_command_safely(const char *cmd, char *const args[], char *output, size_t max_output_len) {
